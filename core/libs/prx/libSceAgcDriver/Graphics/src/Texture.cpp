@@ -34,6 +34,7 @@
 #include <limits>
 #include <exception>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -1490,6 +1491,7 @@ struct PendingWrites {
     PendingList textures;
     // Images taken out of `textures` by a FlushPending still storing them (see adjacentPendingUnchanged).
     std::vector<StorageTexture*> flushing;
+    std::atomic<std::size_t> flushingCount{0};
 };
 
 PendingWrites& Pending() {
@@ -3674,14 +3676,16 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         }
         // Still pending for the adjacency rule of writeBack until each one is stored.
         for (const auto& texture : flush) pending.flushing.push_back(texture.get());
+        pending.flushingCount.store(pending.flushing.size(), std::memory_order_release);
         if (!flush.empty()) BumpPendingSerial();
     }
     if (flush.empty()) {
+        const bool waited = WaitForFlushing(address, bytes, except);
         // Units shadowed over the range (another image's results retiled into the import's unit
         // shadow, or an earlier flush's) still reach the import as the scope asks.
         const bool units = PublishShadowsOnly(address, bytes, scope, reason);
         if (published != nullptr) *published = units;
-        return false;
+        return waited;
     }
     struct Unregister {
         const std::vector<std::shared_ptr<StorageTexture>>& flush;
@@ -3689,6 +3693,7 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
             auto& pending = Pending();
             std::lock_guard lock(pending.mutex);
             for (const auto& texture : flush) std::erase(pending.flushing, texture.get());
+            pending.flushingCount.store(pending.flushing.size(), std::memory_order_release);
             BumpPendingSerial();
         }
     } unregister{flush};
@@ -3732,6 +3737,20 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         if (published != nullptr) *published = units != 0;
     }
     return true;
+}
+
+bool StorageTexture::WaitForFlushing(std::uint64_t address, std::size_t bytes, const StorageTexture* except) {
+    auto& pending = Pending();
+    if (pending.flushingCount.load(std::memory_order_acquire) == 0 || GuestMemory::GpuMutex().HeldByThisThread()) return false;
+    const auto* exempt = refreshing;
+    for (bool waited = false;; waited = true) {
+        {
+            std::lock_guard lock(pending.mutex);
+            if (std::none_of(pending.flushing.begin(), pending.flushing.end(), [&](const StorageTexture* texture) { return texture != except && texture != exempt && texture->overlaps(address, bytes); })) return waited;
+        }
+        { std::lock_guard gpu(GuestMemory::GpuMutex()); }
+        std::this_thread::yield();
+    }
 }
 
 void StorageTexture::SaveBeforeUnwatch(std::uint64_t address, std::size_t bytes) {

@@ -855,6 +855,7 @@ int APS5_VABI mkdir_nid_postfix(const char* path, uint16_t mode) {
 }
 
 int APS5_VABI open_nid_postfix(const char* path, int flags, int mode) {
+    if (File::InvalidOpenFlags(flags)) return PosixFailure(GUEST_EINVAL);
     if (const int error = PathError(path)) return PosixFailure(error);
     return PosixResult(sceKernelOpen(path, flags, static_cast<std::uint16_t>(mode)));
 }

@@ -107,6 +107,7 @@ double APS5_VABI ldexp_nid_postfix(double, int);
 double APS5_VABI scalbn_nid_postfix(double, int);
 float APS5_VABI scalbnf_nid_postfix(float, int);
 float APS5_VABI nextafterf_nid_postfix(float, float);
+double APS5_VABI nextafter_nid_postfix(double, double);
 double APS5_VABI frexp_nid_postfix(double, int*);
 float APS5_VABI frexpf_nid_postfix(float, int*);
 std::int64_t APS5_VABI lround_nid_postfix(double);
@@ -877,6 +878,7 @@ static void CheckLongDoubleFunctions() {
     Require(std::fabs(j0f_nid_postfix(2.5f) - static_cast<float>(std::cyl_bessel_j(0.0, 2.5))) < 1e-6f);
     Require(std::fabs(jnf_nid_postfix(3, 4.0f) - static_cast<float>(std::cyl_bessel_j(3.0, 4.0))) < 1e-6f);
     Require(y0f_nid_postfix(0.0f) == -std::numeric_limits<float>::infinity() && y1f_nid_postfix(0.0f) == -std::numeric_limits<float>::infinity());
+    Require(ynf_nid_postfix(2, 0.0f) == -std::numeric_limits<float>::infinity());
     Require(std::fabs(ynf_nid_postfix(2, 3.0f) - static_cast<float>(std::cyl_neumann(2.0, 3.0))) < 1e-6f);
     Require(std::isnan(y0f_nid_postfix(-1.0f)));
 }
@@ -1143,6 +1145,13 @@ int main() {
     Require(nextafterf_nid_postfix(1.f, 1.f) == 1.f && !std::signbit(nextafterf_nid_postfix(-0.f, 0.f)));
     Require(nextafterf_nid_postfix(std::numeric_limits<float>::max(), std::numeric_limits<float>::infinity()) == std::numeric_limits<float>::infinity());
     Require(std::isnan(nextafterf_nid_postfix(std::numeric_limits<float>::quiet_NaN(), 1.f)) && std::isnan(nextafterf_nid_postfix(1.f, std::numeric_limits<float>::quiet_NaN())));
+    Require(nextafter_nid_postfix(1.0, 2.0) == 0x1.0000000000001p0 && nextafter_nid_postfix(1.0, 0.0) == 0x1.fffffffffffffp-1);
+    Require(nextafter_nid_postfix(0.0, 1.0) == std::numeric_limits<double>::denorm_min());
+    Require(nextafter_nid_postfix(0.0, -1.0) == -std::numeric_limits<double>::denorm_min());
+    Require(nextafter_nid_postfix(std::numeric_limits<double>::denorm_min(), -1.0) == 0.0);
+    Require(nextafter_nid_postfix(1.0, 1.0) == 1.0 && !std::signbit(nextafter_nid_postfix(-0.0, 0.0)));
+    Require(nextafter_nid_postfix(std::numeric_limits<double>::max(), std::numeric_limits<double>::infinity()) == std::numeric_limits<double>::infinity());
+    Require(std::isnan(nextafter_nid_postfix(std::numeric_limits<double>::quiet_NaN(), 1.0)) && std::isnan(nextafter_nid_postfix(1.0, std::numeric_limits<double>::quiet_NaN())));
     int exponent = 0;
     Require(frexp_nid_postfix(12., &exponent) == 0.75 && exponent == 4);
     Require(frexpf_nid_postfix(-12.f, &exponent) == -0.75f && exponent == 4);

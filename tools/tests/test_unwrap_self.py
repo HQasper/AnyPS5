@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import struct
 import subprocess
 import sys
@@ -499,6 +500,19 @@ class UnwrapTest(unittest.TestCase):
         tls = [header for header in headers if header[0] == PT_TLS][0]
         self.assertEqual(tls[5], 0)
         self.assertEqual(tls[2], 0)
+
+    def test_the_report_names_a_non_ascii_output_path_on_a_cp1252_console(self):
+        directory = Path(self.directory) / "\u65e5\u672c"
+        directory.mkdir()
+        source = directory / "input.self"
+        output = directory / "output.elf"
+        source.write_bytes(build_container(default_segments(), default_records(), default_payloads()))
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+        result = subprocess.run([sys.executable, "-X", "utf8=0", str(Path(unwrap_self.__file__)), str(source), str(output)],
+                                env=env, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+        self.assertIn(f"wrote {output}", result.stdout.decode("utf-8"))
+        self.assertTrue(output.exists())
 
 
 if __name__ == "__main__":

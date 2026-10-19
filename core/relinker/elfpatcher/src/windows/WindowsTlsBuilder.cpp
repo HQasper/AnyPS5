@@ -114,7 +114,7 @@ PeDirectory WindowsTlsBuilder::Build(const std::vector<std::uint8_t>& source, co
 
     std::vector<TlsAccess> accesses;
     std::vector<std::pair<std::uint32_t, std::size_t>> gsTraps;
-    std::set<std::uint32_t> branchTargets;
+    std::vector<std::uint32_t> branchTargets;
     std::set<Domain::VirtualAddress> entryRoots;
     const auto instructions = Relinker::CodeInstructionCollector().Collect(source, headers, [&](auto completed, auto total) { report(7000 * completed / total); }, &entryRoots);
     std::uint64_t scanned = 0;
@@ -146,7 +146,7 @@ PeDirectory WindowsTlsBuilder::Build(const std::vector<std::uint8_t>& source, co
             if (info.HasBranchTarget && !info.HasRipRelativeDisp) {
                 const auto target = static_cast<std::int64_t>(rva) + static_cast<std::int64_t>(info.Length) + info.BranchDisp;
                 if (target >= 0 && target <= std::numeric_limits<std::uint32_t>::max())
-                    branchTargets.insert(static_cast<std::uint32_t>(target));
+                    branchTargets.push_back(static_cast<std::uint32_t>(target));
             }
 
             if (info.SegmentPrefix == 0x65 && !insidePrevious) {
@@ -273,11 +273,14 @@ PeDirectory WindowsTlsBuilder::Build(const std::vector<std::uint8_t>& source, co
     code.PatchBranch(skipCallback, code.GetRva());
     code.Emit({0xc3});
 
+    std::sort(branchTargets.begin(), branchTargets.end());
+    branchTargets.erase(std::unique(branchTargets.begin(), branchTargets.end()), branchTargets.end());
+
     std::uint64_t patched = 0;
     for (const auto& access : accesses) {
         if (patched % 256 == 0) report(9000 + 900 * patched / accesses.size());
         ++patched;
-        const auto target = branchTargets.upper_bound(access.Rva);
+        const auto target = std::upper_bound(branchTargets.begin(), branchTargets.end(), access.Rva);
         if (target != branchTargets.end() && *target < access.Rva + access.Length)
             throw Domain::RelinkerException("Branch enters a guest TLS instruction", *target);
         patchAccess(sections, access, code.GetRva());

@@ -1537,11 +1537,17 @@ int APS5_VABI sceNetInetPton(int af, const char* src, void* dst) {
     if (af != NET_AF_INET && af != NET_AF_INET6) {
         return fail(NET_EAFNOSUPPORT);
     }
+    const std::string text = af == NET_AF_INET ? std::string(src, std::strcspn(src, " \t\n\v\f\r")) : std::string(src);
+    std::array<unsigned char, 16> address{};
 #ifdef _WIN32
-    return InetPtonA(af == NET_AF_INET ? AF_INET : AF_INET6, src, dst);
+    const int converted = InetPtonA(af == NET_AF_INET ? AF_INET : AF_INET6, text.c_str(), address.data());
 #else
-    return ::inet_pton(af == NET_AF_INET ? AF_INET : AF_INET6, src, dst);
+    const int converted = ::inet_pton(af == NET_AF_INET ? AF_INET : AF_INET6, text.c_str(), address.data());
 #endif
+    if (converted == 1) {
+        std::memcpy(dst, address.data(), af == NET_AF_INET ? 4 : 16);
+    }
+    return converted;
 }
 
 const char* APS5_VABI sceNetInetNtop(int af, const void* src, char* dst, uint32_t size) {
@@ -1973,9 +1979,8 @@ int APS5_VABI sceNetGetsockoptEx(void) {
     return 0;
 }
 
-int APS5_VABI sceNetGetSystemTime(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI sceNetGetSystemTime(std::uint64_t* output) {
+    if (output != nullptr) *output = sceKernelGetProcessTime();
 }
 
 int APS5_VABI sceNetGetSystemMemInfo(void) {

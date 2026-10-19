@@ -205,6 +205,11 @@ T GuestFmax(T x, T y) {
     return x < y ? y : x;
 }
 
+float GuestBesselSecondKindZero() {
+    std::feraiseexcept(FE_DIVBYZERO);
+    return -std::numeric_limits<float>::infinity();
+}
+
 }
 
 extern "C" {
@@ -354,9 +359,9 @@ long double APS5_VABI hypot3l_nid_postfix(long double x, long double y, long dou
 float APS5_VABI j0f_nid_postfix(float x) { return static_cast<float>(::j0(x)); }
 float APS5_VABI j1f_nid_postfix(float x) { return static_cast<float>(::j1(x)); }
 float APS5_VABI jnf_nid_postfix(int order, float x) { return static_cast<float>(::jn(order, x)); }
-float APS5_VABI y0f_nid_postfix(float x) { return static_cast<float>(::y0(x)); }
-float APS5_VABI y1f_nid_postfix(float x) { return static_cast<float>(::y1(x)); }
-float APS5_VABI ynf_nid_postfix(int order, float x) { return static_cast<float>(::yn(order, x)); }
+float APS5_VABI y0f_nid_postfix(float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::y0(x)); }
+float APS5_VABI y1f_nid_postfix(float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::y1(x)); }
+float APS5_VABI ynf_nid_postfix(int order, float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::yn(order, x)); }
 
 long double APS5_VABI asinl_nid_postfix(long double x) {
     const ExtendedParts parts = SplitExtended(x);
@@ -528,6 +533,7 @@ double APS5_VABI round_nid_postfix(double x) { return std::round(x); }
 float APS5_VABI cbrtf_nid_postfix(float x) { return std::cbrt(x); }
 float APS5_VABI remainderf_nid_postfix(float x, float y) { return std::remainder(x, y); }
 float APS5_VABI nextafterf_nid_postfix(float x, float y) { return std::nextafter(x, y); }
+double APS5_VABI nextafter_nid_postfix(double x, double y) { return std::nextafter(x, y); }
 int APS5_VABI __isfinite_nid_postfix(double x) { return std::isfinite(x) ? 1 : 0; }
 int APS5_VABI __isnan_nid_postfix(double x) { return std::isnan(x) ? 1 : 0; }
 int APS5_VABI __isinf_nid_postfix(double x) { return std::isinf(x) ? 1 : 0; }
