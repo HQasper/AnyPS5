@@ -8,6 +8,7 @@
 #include "prx/libc/include/General.hpp"
 #include "JisX0208.hpp"
 #include "JisX0212.hpp"
+#include "Cp932Ibm.hpp"
 
 namespace {
 
@@ -131,6 +132,12 @@ bool isEucJp(const void* profile) {
     return profile != nullptr && std::memcmp(profile, EUC_JP_TAG, sizeof(EUC_JP_TAG)) == 0;
 }
 
+constexpr uint8_t SJIS_TAG[8] = {'S', 'J', 'I', 'S', '0', '9', '3', '2'};
+
+bool isSJis(const void* profile) {
+    return profile != nullptr && std::memcmp(profile, SJIS_TAG, sizeof(SJIS_TAG)) == 0;
+}
+
 bool isSbc(const void* profile) {
     return profile == CP1252_PROFILE || profile == CP1251_PROFILE || profile == CP1250_PROFILE;
 }
@@ -141,8 +148,42 @@ const void* contextProfile(const void* context) {
     return profile;
 }
 
+constexpr uint32_t SJIS_PRIVATE_FIRST = 47 * 188;
+constexpr uint32_t SJIS_IBM_FIRST = 57 * 188;
+constexpr uint32_t SJIS_NEC_SELECTED_FIRST = 88 * 94;
+constexpr uint32_t SJIS_IBM_COUNT = sizeof(Cp932Ibm::TO_UCS2) / sizeof(Cp932Ibm::TO_UCS2[0]);
+
+uint32_t sjisPointerToUnicode(uint32_t pointer) {
+    if (pointer < 94 * 94) return JisX0208::TO_UCS2[pointer];
+    if (pointer >= SJIS_PRIVATE_FIRST && pointer < SJIS_IBM_FIRST) return 0xE000 + (pointer - SJIS_PRIVATE_FIRST);
+    if (pointer >= SJIS_IBM_FIRST && pointer < SJIS_IBM_FIRST + SJIS_IBM_COUNT) return Cp932Ibm::TO_UCS2[pointer - SJIS_IBM_FIRST];
+    return 0;
+}
+
+int decodeSJis(const uint8_t* mbcs, uint32_t mbcsMax, uint32_t& length, uint32_t& code) {
+    const uint8_t lead = mbcs[0];
+    if (lead <= 0x80) {
+        length = 1;
+        code = lead;
+        return 0;
+    }
+    if (lead >= 0xA1 && lead <= 0xDF) {
+        length = 1;
+        code = 0xFF61 + (lead - 0xA1);
+        return 0;
+    }
+    if (lead == 0xA0 || lead > 0xFC) return CES_ERROR_INVALID_ENCODE;
+    if (mbcsMax < 2) return CES_ERROR_SRC_BUFFER_END;
+    const uint8_t trail = mbcs[1];
+    if (trail < 0x40 || trail == 0x7F || trail > 0xFC) return CES_ERROR_INVALID_ENCODE;
+    length = 2;
+    code = sjisPointerToUnicode((lead - (lead < 0xA0 ? 0x81 : 0xC1)) * 188 + (trail - (trail < 0x7F ? 0x40 : 0x41)));
+    return code != 0 ? 0 : CES_ERROR_UNASSIGNED_CODE;
+}
+
 int decodeMbcs(const void* profile, const uint8_t* mbcs, uint32_t mbcsMax, uint32_t& length, uint32_t& code) {
     const uint8_t lead = mbcs[0];
+    if (isSJis(profile)) return decodeSJis(mbcs, mbcsMax, length, code);
     if (isSbc(profile)) {
         length = 1;
         code = sbcToUnicode(static_cast<const uint8_t*>(profile), lead);
@@ -200,7 +241,62 @@ const std::vector<JisCell>& jisReverse() {
     return reverse;
 }
 
+struct SJisCell {
+    uint16_t code;
+    uint16_t pointer;
+};
+
+const std::vector<SJisCell>& sjisReverse() {
+    static const auto reverse = [] {
+        std::vector<SJisCell> entries;
+        entries.reserve(94 * 94 + SJIS_IBM_COUNT);
+        for (uint32_t pointer = 0; pointer < SJIS_NEC_SELECTED_FIRST; ++pointer) {
+            if (JisX0208::TO_UCS2[pointer] != 0) entries.push_back({JisX0208::TO_UCS2[pointer], static_cast<uint16_t>(pointer)});
+        }
+        for (uint32_t index = 0; index < SJIS_IBM_COUNT; ++index) {
+            entries.push_back({Cp932Ibm::TO_UCS2[index], static_cast<uint16_t>(SJIS_IBM_FIRST + index)});
+        }
+        for (uint32_t pointer = SJIS_NEC_SELECTED_FIRST; pointer < 94 * 94; ++pointer) {
+            if (JisX0208::TO_UCS2[pointer] != 0) entries.push_back({JisX0208::TO_UCS2[pointer], static_cast<uint16_t>(pointer)});
+        }
+        std::stable_sort(entries.begin(), entries.end(), [](const SJisCell& left, const SJisCell& right) { return left.code < right.code; });
+        entries.erase(std::unique(entries.begin(), entries.end(), [](const SJisCell& left, const SJisCell& right) { return left.code == right.code; }), entries.end());
+        return entries;
+    }();
+    return reverse;
+}
+
+int encodeSJis(uint32_t code, uint8_t* mbcs, uint32_t& length) {
+    if (code <= 0x80) {
+        length = 1;
+        mbcs[0] = static_cast<uint8_t>(code);
+        return 0;
+    }
+    if (code >= 0xFF61 && code <= 0xFF9F) {
+        length = 1;
+        mbcs[0] = static_cast<uint8_t>(0xA1 + (code - 0xFF61));
+        return 0;
+    }
+    uint32_t pointer = 0;
+    if (code >= 0xE000 && code < 0xE000 + (SJIS_IBM_FIRST - SJIS_PRIVATE_FIRST)) {
+        pointer = SJIS_PRIVATE_FIRST + (code - 0xE000);
+    } else {
+        if (code > 0xFFFF) return CES_ERROR_UNASSIGNED_CODE;
+        const auto& reverse = sjisReverse();
+        const auto found = std::lower_bound(reverse.begin(), reverse.end(), static_cast<uint16_t>(code), [](const SJisCell& entry, uint16_t value) { return entry.code < value; });
+        if (found == reverse.end() || found->code != code) return CES_ERROR_UNASSIGNED_CODE;
+        pointer = found->pointer;
+    }
+    const uint32_t lead = pointer / 188;
+    const uint32_t trail = pointer % 188;
+    length = 2;
+    mbcs[0] = static_cast<uint8_t>(lead + (lead < 0x1F ? 0x81 : 0xC1));
+    mbcs[1] = static_cast<uint8_t>(trail + (trail < 0x3F ? 0x40 : 0x41));
+    return 0;
+}
+
 int encodeMbcs(const void* profile, uint32_t code, uint8_t* mbcs, uint32_t& length) {
+    if (isSJis(profile)) return encodeSJis(code, mbcs, length);
     if (isSbc(profile)) {
         length = 1;
         return unicodeToSbc(static_cast<const uint8_t*>(profile), code, mbcs[0]) ? 0 : CES_ERROR_UNASSIGNED_CODE;
@@ -248,7 +344,7 @@ template<typename Source, typename Decode>
 int toMbcs(const void* context, const Source* source, uint32_t sourceMax, uint32_t* sourceLen, uint8_t* mbcs, uint32_t mbcsMax, uint32_t* mbcsLen, Decode decode) {
     if (!context) return CES_ERROR_INVALID_PARAMETER;
     const void* profile = contextProfile(context);
-    if (!isEucJp(profile) && !isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
+    if (!isEucJp(profile) && !isSJis(profile) && !isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
     if (!source) return CES_ERROR_INVALID_SRC_BUFFER;
     uint32_t read = 0;
     uint32_t written = 0;
@@ -275,7 +371,7 @@ template<typename Target, typename Encode>
 int fromMbcs(const void* context, const uint8_t* mbcs, uint32_t mbcsMax, uint32_t* mbcsLen, Target* target, uint32_t targetMax, uint32_t* targetLen, Encode encode) {
     if (!context) return CES_ERROR_INVALID_PARAMETER;
     const void* profile = contextProfile(context);
-    if (!isEucJp(profile) && !isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
+    if (!isEucJp(profile) && !isSJis(profile) && !isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
     if (!mbcs) return CES_ERROR_INVALID_SRC_BUFFER;
     uint32_t read = 0;
     uint32_t written = 0;
@@ -315,6 +411,7 @@ const void* APS5_VABI sceCesRefersUcsProfileCp1250(void) {
 
 void* APS5_VABI sceCesUcsProfileInitSJis1997Cp932(void* sheet) {
     if (!sheet) return nullptr;
+    std::memcpy(sheet, SJIS_TAG, sizeof(SJIS_TAG));
     return sheet;
 }
 
