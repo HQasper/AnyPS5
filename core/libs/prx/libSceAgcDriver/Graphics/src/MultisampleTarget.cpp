@@ -36,6 +36,14 @@ std::uint32_t MultisampledBlockLog2(ColorTileMode mode) {
     }
 }
 
+std::uint64_t collectBlocks(std::uint64_t address, std::size_t bytes) {
+    constexpr std::uint64_t block = 65536;
+    const auto first = address & ~(block - 1);
+    const auto stop = (address + bytes + block - 1) & ~(block - 1);
+    const auto generation = GuestMemory::CollectWritesUncached(first, static_cast<std::size_t>(stop - first));
+    return generation != 0 ? generation : GuestMemory::CollectWritesUncached(address, bytes);
+}
+
 bool sameTarget(const ColorTarget& a, const ColorTarget& b) {
     return a.surfaceAddress == b.surfaceAddress && a.format == b.format && a.extent.width == b.extent.width && a.extent.height == b.extent.height && a.samples == b.samples;
 }
@@ -365,7 +373,7 @@ private:
         std::vector<GuestMemory::UnchangedQuery> metadata(dccRanges.begin() + 1, dccRanges.end());
         for (auto& range : metadata) {
             if (!GuestMemory::Watched(range.address, range.bytes)) return false;
-            range.generation = GuestMemory::CollectWritesUncached(range.address, range.bytes);
+            range.generation = collectBlocks(range.address, range.bytes);
             if (range.generation == 0) return false;
         }
         clear = MultisampledDccClear(use, std::vector<std::byte>(dccRanges[1].bytes, std::byte{*keys}), std::vector<std::byte>(use.cmaskBytes, std::byte{cmaskKeys}));
@@ -386,7 +394,7 @@ private:
         for (auto& range : dccRanges) {
             GuestMemory::CheckRange(reinterpret_cast<const void*>(range.address), range.bytes, 256);
             Require(GuestMemory::Watched(range.address, range.bytes), "initial multisampled DCC contents require watched guest memory");
-            range.generation = GuestMemory::CollectWritesUncached(range.address, range.bytes);
+            range.generation = collectBlocks(range.address, range.bytes);
             Require(range.generation != 0, "initial multisampled DCC contents have no write generation");
         }
         for (std::size_t first = 0; first < dccRanges.size(); ++first) {

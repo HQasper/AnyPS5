@@ -197,7 +197,7 @@ public:
     void WriteBack();
     // Deferred write-back (APS5_EAGER_WRITEBACK=1 stores at once instead).
     void MarkDirty();
-    void MarkSliceDirty(std::uint32_t slice);
+    void MarkSliceDirty(std::uint32_t slice, std::uint32_t count = 1);
     void Flush();
     bool Dirty() const;
     // Stores every pending image overlapping the range, except `except`; returns whether any was.
@@ -339,6 +339,7 @@ public:
     // may carry DCC metadata, and this surface must be host-imported (the write-back is GPU-direct).
     // False, naming why, when the copy must be a transfer.
     bool CopyFrom(StorageTexture& source, const char*& refusal);
+    static const char* CopyRefusal(const Context& context, const StorageTexture* destination, const StorageTexture& source, std::uint64_t address);
     VkImage Image() const { return image; }
     const GuestTextureResource& Descriptor() const { return descriptor; }
     std::uint32_t ImageLayers() const { return geometry.imageLayers; }

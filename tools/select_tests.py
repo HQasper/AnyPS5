@@ -197,6 +197,9 @@ def select(graph, changed):
 def plan(build, graph, picked):
     _, listed = build.tests()
     run = [i for i, t in enumerate(listed, 1) if t["name"] in picked or t["name"] not in graph["tests"]]
+    if not run:
+        skip = {build.target(t) for t in listed} - {None}
+        return [], [t for t in build.leaves() if t not in skip], len(listed)
     _, selected = build.tests("-I", "0,0,0," + ",".join(map(str, run)))
     names = {t["name"] for t in selected}
     run = [i for i, t in enumerate(listed, 1) if t["name"] in names]

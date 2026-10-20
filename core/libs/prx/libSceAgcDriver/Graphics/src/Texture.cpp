@@ -1373,7 +1373,7 @@ StorageTexture::StorageTexture(const Context& context, TextureDetiler& detiler, 
         const bool layered = geometry.layers >= 2 && !geometry.thick && geometry.imageDepth == 1 && geometry.layers == geometry.imageLayers && geometry.layerBytes * geometry.layers == guestBytes && geometry.layerBytes % 65536 == 0 && descriptor.baseAddress % 65536 == 0;
         // Tile blocks divide the stamp blocks, so at an aligned base every unit is whole tile blocks
         // of its (layer, mip) slices (sliceWindows).
-        blockUnits = LayerTrackingEnabled() && BlockTrackingEnabled() && !geometry.thick && descriptor.tileMode != TextureTileMode::kLinear && descriptor.baseAddress % 65536 == 0;
+        blockUnits = LayerTrackingEnabled() && BlockTrackingEnabled() && TracksBlockUnits(descriptor, geometry);
         trackedLayers = blockUnits ? static_cast<std::uint32_t>((guestBytes + 65535) / 65536) : layered && LayerTrackingEnabled() ? geometry.layers : 1u;
         trackedLayerBytes = blockUnits ? 65536 : guestBytes / trackedLayers;
         layerGeneration.assign(trackedLayers, 0);
@@ -1822,8 +1822,9 @@ VkImageView StorageTexture::AttachmentView(VkFormat format, std::uint32_t mip, s
     Require(attachable, "storage image cannot be a color attachment");
     Require(mip < descriptor.mipCount, "attachment mip exceeds the storage image");
     const bool volume = descriptor.dimension == TextureDimension::k3D;
-    Require((depthSlice == 0 && layers == 1) || (volume && mip == 0 && layers != 0 && depthSlice + layers - 1u <= descriptor.depthOrLastArray), "attachment slice is outside the storage image");
-    Require(layer == 0 || (!volume && descriptor.dimension == TextureDimension::k2DArray && descriptor.baseArray + layer <= descriptor.depthOrLastArray), "attachment layer is outside the storage image");
+    const bool array = !volume && descriptor.dimension == TextureDimension::k2DArray;
+    Require((depthSlice == 0 && layers == 1) || (volume && mip == 0 && layers != 0 && depthSlice + layers - 1u <= descriptor.depthOrLastArray) || (array && depthSlice == 0 && layers != 0), "attachment slice is outside the storage image");
+    Require((layer == 0 && layers == 1) || (volume && layer == 0) || (array && descriptor.baseArray + layer + layers - 1u <= descriptor.depthOrLastArray), "attachment layer is outside the storage image");
     const auto found = attachmentViews.find({format, mip, depthSlice, layers, layer});
     if (found != attachmentViews.end()) return found->second;
     VkImageViewUsageCreateInfo usage{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
@@ -2923,7 +2924,7 @@ std::vector<StorageTexture::ImportSegment> StorageTexture::importSegments() cons
         for (const auto& piece : pieces) {
             const auto from = std::max(piece.address, begin);
             const auto to = std::min(piece.address + piece.bytes, end);
-            const auto* import = HostImportFor(context, from, static_cast<std::size_t>(to - from));
+            const auto* import = HostImportFor(context, from, static_cast<std::size_t>(to - from), ImportRequester::Segment);
             if (import == nullptr) return {};
             if (!segments.empty() && segments.back().import == import) segments.back().end = to;
             else if (!segments.empty() && unitAligned && from % 65536 != 0) return {};
@@ -3515,14 +3516,14 @@ void StorageTexture::MarkDirty() {
     markLayersPending(0, trackedLayers);
 }
 
-void StorageTexture::MarkSliceDirty(std::uint32_t slice) {
-    if (geometry.thick || geometry.imageLayers <= 1 || slice >= geometry.imageLayers || geometry.layerBytes == 0 || trackedLayerBytes == 0 || descriptor.dccAddress != 0) {
+void StorageTexture::MarkSliceDirty(std::uint32_t slice, std::uint32_t count) {
+    if (geometry.thick || geometry.imageLayers <= 1 || count == 0 || slice >= geometry.imageLayers || count > geometry.imageLayers - slice || geometry.layerBytes == 0 || trackedLayerBytes == 0 || descriptor.dccAddress != 0) {
         MarkDirty();
         return;
     }
     const auto begin = geometry.GuestLayerOffset(slice);
     const auto first = static_cast<std::uint32_t>(begin / trackedLayerBytes);
-    const auto last = static_cast<std::uint32_t>(std::min<std::uint64_t>((begin + geometry.layerBytes + trackedLayerBytes - 1) / trackedLayerBytes, trackedLayers));
+    const auto last = static_cast<std::uint32_t>(std::min<std::uint64_t>((begin + geometry.layerBytes * count + trackedLayerBytes - 1) / trackedLayerBytes, trackedLayers));
     if (first >= last) {
         MarkDirty();
         return;
@@ -4687,28 +4688,19 @@ bool StorageTexture::SameSurfaceShape(const StorageTexture& other) const {
     return guestBytes == other.guestBytes && mine.width == theirs.width && mine.height == theirs.height && mine.depthOrLastArray == theirs.depthOrLastArray && mine.baseArray == theirs.baseArray && mine.mipCount == theirs.mipCount && mine.tileMode == theirs.tileMode && mine.dimension == theirs.dimension && mine.format == theirs.format && storageFormat == other.storageFormat && geometry.imageLayers == other.geometry.imageLayers && geometry.imageDepth == other.geometry.imageDepth;
 }
 
+const char* StorageTexture::CopyRefusal(const Context& context, const StorageTexture* destination, const StorageTexture& source, std::uint64_t address) {
+    if (destination != nullptr && (destination == &source || !destination->SameSurfaceShape(source))) return "shape";
+    if (source.descriptor.dccAddress != 0 || (destination != nullptr && destination->descriptor.dccAddress != 0)) return "keys";
+    if (source.released || !source.Cached() || (destination != nullptr && (destination->released || !destination->Cached()))) return "released";
+    if (HostImportFor(context, address, static_cast<std::size_t>(source.guestBytes)) == nullptr) return "not imported";
+    if (Recorder::Active() == nullptr) return "no recorder";
+    return nullptr;
+}
+
 bool StorageTexture::CopyFrom(StorageTexture& source, const char*& refusal) {
-    if (&source == this || !SameSurfaceShape(source)) {
-        refusal = "shape";
-        return false;
-    }
-    if (descriptor.dccAddress != 0 || source.descriptor.dccAddress != 0) {
-        refusal = "keys";
-        return false;
-    }
-    if (released || source.released || !Cached() || !source.Cached()) {
-        refusal = "released";
-        return false;
-    }
-    if (HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) == nullptr) {
-        refusal = "not imported";
-        return false;
-    }
+    refusal = CopyRefusal(context, this, source, descriptor.baseAddress);
+    if (refusal != nullptr) return false;
     auto* recorder = Recorder::Active();
-    if (recorder == nullptr) {
-        refusal = "no recorder";
-        return false;
-    }
     // The source image must hold the surface: a stale one uploads first (and other images'
     // results pending over its memory land first, as the transfer's flush would have them).
     source.Refresh();

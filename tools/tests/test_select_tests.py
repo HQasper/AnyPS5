@@ -204,5 +204,19 @@ class CaseInsensitivePathTests(unittest.TestCase):
             self.assertIsNone(build.repo(os.path.join(os.sep, "WORK", "SOURCE", "BUILD", "Generated.h")))
 
 
+class PlanTests(unittest.TestCase):
+    def test_plan_empty_run_avoids_invoking_ctest(self):
+        build = mock.Mock()
+        build.tests.return_value = ({}, [{"name": "alpha", "command": ["/build/alpha_tests"]}])
+        build.leaves.return_value = ["tests/alpha_tests"]
+        build.target.side_effect = lambda t: "tests/alpha_tests"
+        graph = {"tests": {"alpha": {}}}
+        run, leaves, count = select_tests.plan(build, graph, set())
+        self.assertEqual(run, [])
+        self.assertEqual(leaves, [])
+        self.assertEqual(count, 1)
+        build.tests.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

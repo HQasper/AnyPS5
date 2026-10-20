@@ -112,6 +112,13 @@ static std::filesystem::path NativeMetadataPath(const std::filesystem::path& pat
     return native.starts_with(L"\\\\") ? std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2))
                                             : std::filesystem::path(L"\\\\?\\" + native);
 }
+static bool NativeSymbolicLinkLoop(const std::filesystem::path& path) {
+    const auto handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_CANT_RESOLVE_FILENAME;
+    CloseHandle(handle);
+    return false;
+}
 static int MapFlags(int sceFlags) {
     int f = 0;
     const int acc = sceFlags & SCE_KERNEL_O_ACCMODE;
@@ -228,7 +235,7 @@ static int OpenNative(const std::filesystem::path& native, int flags, std::uint1
     }
 #endif
     if (fd < 0) {
-        return SceErrorFromErrno(errno);
+        return SceErrorFromErrno(errno == ENOENT ? NotFoundError_nid_no_patch(native) : errno);
     }
     if ((flags & SCE_KERNEL_O_ACCMODE) != SCE_KERNEL_O_RDONLY || (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC)))
         RecordWrittenPath_nid_no_patch(native);
@@ -370,7 +377,10 @@ int APS5_VABI sceKernelStat(const char* path, FileStat* sb) {
     if (error == std::errc::not_a_directory) return SceErrorFromErrno(GuestEnotdir);
     if (error == std::errc::filename_too_long || error == std::errc::too_many_symbolic_link_levels) return SceKernelError(FilesystemError(error));
     if (!std::filesystem::exists(status)) {
-        return SceErrorFromErrno(2);
+#ifdef _WIN32
+        if (NativeSymbolicLinkLoop(metadataPath)) return SCE_KERNEL_ERROR_ELOOP;
+#endif
+        return SceErrorFromErrno(NotFoundError_nid_no_patch(native));
     }
     const std::string_view guestPath(path);
     if (!guestPath.empty() && guestPath.back() == '/' && !std::filesystem::is_directory(status)) return SceErrorFromErrno(GuestEnotdir);
@@ -388,7 +398,7 @@ int APS5_VABI sceKernelUnlink(const char* path) {
     std::error_code error;
     if (std::filesystem::is_directory(std::filesystem::symlink_status(native, error))) return SceErrorFromErrno(GuestEperm);
     if (NativeUnlink(native) != 0) {
-        return SceErrorFromErrno(errno);
+        return SceErrorFromErrno(errno == ENOENT ? NotFoundError_nid_no_patch(native) : errno);
     }
     RecordWrittenPath_nid_no_patch(native);
     return 0;

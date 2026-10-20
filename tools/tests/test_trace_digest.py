@@ -628,5 +628,28 @@ class IntervalDigestTests(unittest.TestCase):
                 cells = [cell.strip() for cell in rows[2].split("|")[1:-1]]
                 self.assertEqual(cells, ["1", "0-30", "1800", "16.6", "18.0", "20.0", "25.0", "5.0", "50 %", escaped + " 7.5"])
 
+    def test_bom_encoded_stacks_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stacks_file = Path(directory) / "stacks.txt"
+            stacks_file.write_bytes(b"\xef\xbb\xbf# samples=1 depth=1 truncated=0\nmodule.prx+0x10 1\n")
+            loaded = trace_digest.load_stacks(stacks_file)
+            self.assertEqual(loaded, [(["module.prx+0x10"], 1)])
+
+    def test_bom_encoded_intervals_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            intervals_file = Path(directory) / "intervals.jsonl"
+            intervals_file.write_bytes(b"\xef\xbb\xbf" + json.dumps({"interval_start_s": 0.0, "interval_end_s": 10.0, "presents": 600}).encode("utf-8") + b"\n")
+            loaded = trace_digest.load_intervals(intervals_file)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["interval_start_s"], 0.0)
+
+    def test_bom_encoded_summary_loads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary_file = Path(directory) / "aps5-summary.jsonl"
+            summary_file.write_bytes(b"\xef\xbb\xbf" + json.dumps(SUMMARY).encode("utf-8") + b"\n")
+            loaded = trace_digest.load_summary(str(summary_file), SUMMARY["trace"])
+            self.assertEqual(loaded["commit"], SUMMARY["commit"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,7 @@ def load_summary(path, trace_path):
     candidate = Path(path) if path else Path(trace_path).with_name("aps5-summary.jsonl")
     if not candidate.exists():
         return None
-    lines = [json.loads(line) for line in candidate.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [json.loads(line) for line in candidate.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     name = Path(trace_path).name
     alternate = name[:-3] if name.endswith(".gz") else name + ".gz"
     for filename in (name, alternate):
@@ -92,7 +92,7 @@ def load_summary(path, trace_path):
 
 def load_stacks(path):
     stacks = []
-    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
         if line.startswith("#") or not line.strip():
             continue
         frames, _, count = line.rpartition(" ")
@@ -264,7 +264,7 @@ def markdown(result):
 
 
 def load_intervals(path):
-    lines = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [json.loads(line) for line in Path(path).read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     return [line for line in lines if "interval_start_s" in line]
 
 
@@ -349,8 +349,9 @@ def main(arguments=None):
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     try:
         sys.exit(main())
     except (EOFError, OSError, ValueError, zlib.error) as error:

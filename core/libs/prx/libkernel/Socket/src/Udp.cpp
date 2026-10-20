@@ -18,6 +18,12 @@
 #include <poll.h>
 #include <unistd.h>
 #include <cerrno>
+#ifdef __linux__
+#include <sys/uio.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #endif
 #include "SceTypes.hpp"
 #include "prx/libc/include/GuestArena.hpp"
@@ -63,13 +69,8 @@ int Fail(int error) { *__error_nid_postfix() = error; return -1; }
 constexpr int GuestPeek = 0x2;
 constexpr int GuestDontWait = 0x80;
 constexpr int GuestNoSignal = 0x20000;
-#ifdef _WIN32
-constexpr int GuestSendFlags = GuestNoSignal;
-constexpr int GuestReceiveFlags = GuestPeek;
-#else
 constexpr int GuestSendFlags = GuestNoSignal | GuestDontWait;
 constexpr int GuestReceiveFlags = GuestPeek | GuestDontWait;
-#endif
 int NativeSendFlags(int flags) {
 #ifdef _WIN32
     static_cast<void>(flags);
@@ -222,12 +223,15 @@ std::shared_ptr<Socket> Lookup(int descriptor) {
     std::lock_guard lock(socketsMutex);
     const auto found = sockets.find(descriptor);
     if (found != sockets.end()) return found->second;
-    Fail(9);
+    Fail(descriptor >= 0 && DescriptorIsOpen_nid_no_patch(descriptor) ? 38 : 9);
     return {};
 }
 bool Address(const void* input, std::uint32_t length, sockaddr_storage& native, socklen_t& size) {
-    if (!input || length < 2) { Fail(14); return false; }
+    if (length > 255) { Fail(63); return false; }
+    if (length < 2) { Fail(22); return false; }
+    if (!input) { Fail(14); return false; }
     const auto* bytes = static_cast<const unsigned char*>(input);
+    if ((bytes[1] == 2 && length < 16) || (bytes[1] == 28 && length < 28)) { Fail(22); return false; }
     if (bytes[1] == 2 && length >= 16) {
         auto& v4 = reinterpret_cast<sockaddr_in&>(native);
         v4.sin_family = AF_INET;
@@ -625,7 +629,16 @@ int SocketSendFlags(Socket& socket, int flags) {
     return NativeSendFlags(socket.options.noSignal ? flags | GuestNoSignal : flags);
 }
 int WaitForTransfer(Socket& socket, bool send, int flags) {
-    if ((flags & GuestDontWait) != 0) return 0;
+    if ((flags & GuestDontWait) != 0) {
+#ifdef _WIN32
+        NativePollDescriptor entry{};
+        entry.fd = socket.value;
+        entry.events = static_cast<short>(send ? POLLWRNORM : POLLRDNORM);
+        return WSAPoll(&entry, 1, 0) == 0 ? 35 : 0;
+#else
+        return 0;
+#endif
+    }
     std::int64_t timeout;
     {
         std::lock_guard lock(socket.modeMutex);
@@ -1071,6 +1084,11 @@ int APS5_VABI socketpair_nid_postfix(int family, int type, int protocol, int* de
             GuestSockets::Close(firstDescriptor);
             return Fail(error);
         }
+        if ((type & GuestCloseOnExec) != 0) {
+            std::lock_guard registry(socketsMutex);
+            closeOnExecDescriptors.insert(firstDescriptor);
+            closeOnExecDescriptors.insert(secondDescriptor);
+        }
         descriptors[0] = firstDescriptor;
         descriptors[1] = secondDescriptor;
         return 0;
@@ -1103,7 +1121,9 @@ int APS5_VABI listen_nid_postfix(int descriptor, int backlog) {
     const auto socket = Lookup(descriptor);
     if (!socket) return -1;
     if (socket->type != 1) return Fail(45);
-    return ::listen(socket->value, backlog) ? Fail(NativeError()) : 0;
+    if (::listen(socket->value, backlog) == 0) return 0;
+    const int error = NativeError();
+    return Fail(error == 56 ? 22 : error);
 }
 int APS5_VABI accept_nid_postfix(int descriptor, void* address, std::uint32_t* length) {
     const auto listener = Lookup(descriptor);
@@ -1171,7 +1191,7 @@ int APS5_VABI bind_nid_postfix(int descriptor, const void* address, std::uint32_
 }
 int APS5_VABI shutdown_nid_postfix(int descriptor, int how) {
     const auto socket = Lookup(descriptor);
-    if (!socket) return Fail(9);
+    if (!socket) return -1;
     if (how < 0 || how > 2) return Fail(22);
     if (::shutdown(socket->value, how)) return Fail(NativeError());
     std::lock_guard lock(socket->modeMutex);
@@ -1211,6 +1231,7 @@ int APS5_VABI getpeername_nid_postfix(int descriptor, void* address, std::uint32
 }
 int APS5_VABI ioctl_nid_postfix(int descriptor, std::uint64_t request, void* argument) {
     if (!GuestSockets::IsOpen(descriptor)) return File::Ioctl(descriptor, request, argument);
+    if (File::IoctlRequestMalformed(request)) return Fail(25);
     const auto socket = Lookup(descriptor);
     if (!socket) return -1;
     if (!argument) return Fail(14);
@@ -1327,8 +1348,80 @@ std::int64_t APS5_VABI sendmsg_nid_postfix(int descriptor, const GuestMsghdr* me
     }
     return sendto_nid_postfix(descriptor, buffer.data(), buffer.size(), flags, message->name, message->name ? message->nameLength : 0u);
 }
+#ifdef _WIN32
+static bool GuestPagesAllow(std::uintptr_t start, std::size_t bytes, DWORD allowed) {
+    const auto end = start + bytes;
+    for (auto address = start; address < end;) {
+        MEMORY_BASIC_INFORMATION memory{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &memory, sizeof(memory)) != sizeof(memory)) return false;
+        if (memory.State != MEM_COMMIT || (memory.Protect & PAGE_GUARD) != 0 || (memory.Protect & allowed) == 0) return false;
+        address = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+    }
+    return true;
+}
+#elif defined(__linux__)
+static bool Transferred(ssize_t copied, std::size_t bytes, const char* call) {
+    if (copied >= 0) return static_cast<std::size_t>(copied) == bytes;
+    if (errno == EFAULT) return false;
+    throw std::runtime_error(std::string("recvmsg: ") + call + " failed with errno " + std::to_string(errno));
+}
+#endif
+static bool GuestRange(const void* pointer, std::size_t bytes) {
+    const auto start = reinterpret_cast<std::uintptr_t>(pointer);
+    return start != 0 && bytes <= UINTPTR_MAX - start;
+}
+static bool ReadGuest(void* destination, const void* source, std::size_t bytes) {
+    if (bytes == 0) return true;
+    if (!GuestRange(source, bytes)) return false;
+    GuestArena::GuestArenaPrepareHostRead_nid_no_patch(source, bytes);
+#ifdef _WIN32
+    if (!GuestPagesAllow(reinterpret_cast<std::uintptr_t>(source), bytes,
+            PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) return false;
+    std::memcpy(destination, source, bytes);
+    return true;
+#elif defined(__linux__)
+    iovec local{destination, bytes};
+    iovec remote{const_cast<void*>(source), bytes};
+    return Transferred(::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0), bytes, "process_vm_readv");
+#elif defined(__APPLE__)
+    mach_vm_size_t copied = 0;
+    return ::mach_vm_read_overwrite(::mach_task_self(), reinterpret_cast<mach_vm_address_t>(source), bytes,
+        reinterpret_cast<mach_vm_address_t>(destination), &copied) == KERN_SUCCESS && copied == bytes;
+#else
+    std::memcpy(destination, source, bytes);
+    return true;
+#endif
+}
+static bool WriteGuest(void* destination, const void* source, std::size_t bytes) {
+    if (bytes == 0) return true;
+    if (!GuestRange(destination, bytes)) return false;
+    const GuestArena::HostWrite guard(destination, bytes);
+    if (!guard.Open()) return false;
+#ifdef _WIN32
+    if (!GuestPagesAllow(reinterpret_cast<std::uintptr_t>(destination), bytes,
+            PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) return false;
+    std::memcpy(destination, source, bytes);
+    return true;
+#elif defined(__linux__)
+    iovec local{const_cast<void*>(source), bytes};
+    iovec remote{destination, bytes};
+    return Transferred(::process_vm_writev(::getpid(), &local, 1, &remote, 1, 0), bytes, "process_vm_writev");
+#elif defined(__APPLE__)
+    return ::mach_vm_write(::mach_task_self(), reinterpret_cast<mach_vm_address_t>(destination),
+        reinterpret_cast<vm_offset_t>(source), static_cast<mach_msg_type_number_t>(bytes)) == KERN_SUCCESS;
+#else
+    std::memcpy(destination, source, bytes);
+    return true;
+#endif
+}
 std::int64_t APS5_VABI recvmsg_nid_postfix(int descriptor, GuestMsghdr* message, int flags) {
-    const auto total = MessageLength(message);
+    GuestMsghdr header{};
+    if (!message || !ReadGuest(&header, message, sizeof(header))) return Fail(14);
+    if (header.iovLength < 0 || header.iovLength > 1024) return Fail(40);
+    std::vector<GuestIovec> vectors(static_cast<std::size_t>(header.iovLength));
+    if (!ReadGuest(vectors.data(), header.iov, vectors.size() * sizeof(GuestIovec))) return Fail(14);
+    header.iov = vectors.data();
+    const auto total = MessageLength(&header);
     if (total < 0) return -1;
     const auto socket = Lookup(descriptor);
     if (!socket) return -1;
@@ -1353,27 +1446,33 @@ std::int64_t APS5_VABI recvmsg_nid_postfix(int descriptor, GuestMsghdr* message,
         return Fail(NativeError());
 #endif
     }
-    message->flags = 0;
+    header.flags = 0;
     if (received > total) {
         received = total;
-        message->flags = 0x10;
+        header.flags = 0x10;
     }
     std::size_t offset = 0;
-    for (int i = 0; i < message->iovLength && offset < static_cast<std::size_t>(received); ++i) {
-        const auto count = std::min<std::size_t>(message->iov[i].length, static_cast<std::size_t>(received) - offset);
-        std::memcpy(message->iov[i].base, buffer.data() + offset, count);
+    for (const auto& vector : vectors) {
+        if (offset >= static_cast<std::size_t>(received)) break;
+        const auto count = std::min<std::size_t>(vector.length, static_cast<std::size_t>(received) - offset);
+        if (!WriteGuest(vector.base, buffer.data() + offset, count)) return Fail(14);
         offset += count;
     }
-    if (message->name && socket->family == GuestUnix) {
-        if (socket->type == 1) message->nameLength = 0; else UnnamedAddress(message->name, &message->nameLength);
-    } else if (message->name) {
-        if (size > 0 && (native.ss_family == AF_INET || native.ss_family == AF_INET6)) {
-            GuestAddress(native, message->name, &message->nameLength);
+    if (header.name) {
+        unsigned char address[28]{};
+        if (socket->family == GuestUnix) {
+            if (socket->type == 1) header.nameLength = 0; else UnnamedAddress(address, &header.nameLength);
+        } else if (size > 0 && (native.ss_family == AF_INET || native.ss_family == AF_INET6)) {
+            GuestAddress(native, address, &header.nameLength);
         } else {
-            message->nameLength = 0;
+            header.nameLength = 0;
         }
+        if (!WriteGuest(header.name, address, header.nameLength)) return Fail(14);
+        if (!WriteGuest(&message->nameLength, &header.nameLength, sizeof(header.nameLength))) return Fail(14);
     }
-    message->controlLength = 0;
+    header.controlLength = 0;
+    constexpr auto results = offsetof(GuestMsghdr, controlLength);
+    if (!WriteGuest(reinterpret_cast<char*>(message) + results, reinterpret_cast<const char*>(&header) + results, sizeof(header) - results)) return Fail(14);
     return received;
 }
 struct GuestSendfileHeaders {

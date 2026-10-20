@@ -45,6 +45,7 @@ int APS5_VABI sceKernelFdatasync(int);
 int APS5_VABI sceKernelWriteThrottlingStatus(std::uint64_t*);
 int APS5_VABI sceKernelFtruncate(int, long long);
 int APS5_VABI sceKernelTruncate_nid_postfix(const char*, long long);
+int APS5_VABI truncate_nid_postfix(const char*, long long);
 int APS5_VABI sceKernelUtimes_nid_postfix(const char*, const void*);
 int APS5_VABI open_nid_postfix(const char*, int, int);
 int APS5_VABI creat_nid_postfix(const char*, int);
@@ -543,6 +544,9 @@ int main() {
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     Require(mkdir_nid_postfix(root.string().c_str(), 0700) == 0);
     Require(mkdir_nid_postfix(root.string().c_str(), 0700) == -1 && *__error_nid_postfix() == 17);
+    for (const char* openMode : {"w", "wb", "r+", "a"}) {
+        Require(fopen_nid_postfix(root.string().c_str(), openMode) == nullptr && *__error_nid_postfix() == 21);
+    }
     Require(mkdir_nid_postfix((root / "missing" / "child").string().c_str(), 0700) == -1 && *__error_nid_postfix() == 2);
     Require(mkdir_nid_postfix(nullptr, 0700) == -1 && *__error_nid_postfix() == 14);
     const auto file = root / "file.txt";
@@ -732,7 +736,7 @@ int main() {
     Require(std::filesystem::file_size(sized) == 6);
     { std::ifstream stream(sized); std::string contents; std::getline(stream, contents);
       Require(contents == "012345"); }
-    Require(sceKernelTruncate_nid_postfix((sized / "missing").string().c_str(), 6) == static_cast<int>(0x80020002u));
+    Require(sceKernelTruncate_nid_postfix((sized / "missing").string().c_str(), 6) == static_cast<int>(0x80020014u));
     Require(sceKernelUtimes_nid_postfix(sized.string().c_str(), nullptr) == 0);
     std::FILE* native = std::fopen(sized.string().c_str(), "r+b");
     Require(native != nullptr);
@@ -780,6 +784,14 @@ int main() {
     Require(sceKernelFdatasync(socket) == static_cast<int>(0x80020016u));
     Require(fsync_nid_postfix(socket) == -1 && *__error_nid_postfix() == 22);
     Require(sceKernelFsync(socket) == static_cast<int>(0x80020016u));
+    int syncPipe[2] = {-1, -1};
+    Require(pipe_nid_postfix(syncPipe) == 0);
+    for (const int end : syncPipe) {
+        Require(fsync_nid_postfix(end) == -1 && *__error_nid_postfix() == 22);
+        Require(fdatasync_nid_postfix(end) == -1 && *__error_nid_postfix() == 22);
+        Require(sceKernelFsync(end) == static_cast<int>(0x80020016u) && sceKernelFdatasync(end) == static_cast<int>(0x80020016u));
+    }
+    Require(close_nid_postfix(syncPipe[0]) == 0 && close_nid_postfix(syncPipe[1]) == 0);
     Require(close_nid_postfix(socket) == 0);
     Require(fchmod_nid_postfix(socket, 0600) == -1 && *__error_nid_postfix() == 9);
     Require(futimes_nid_postfix(socket, nullptr) == -1 && *__error_nid_postfix() == 9);
@@ -817,6 +829,11 @@ int main() {
     const auto cwdPermissions = std::filesystem::status(".").permissions();
     Require(sceKernelChmod_nid_postfix("", static_cast<unsigned short>(cwdPermissions) & 07777) == static_cast<int>(0x80020002u));
     Require(sceKernelTruncate_nid_postfix("", 0) == static_cast<int>(0x80020002u));
+    Require(sceKernelTruncate_nid_postfix(nullptr, -1) == static_cast<int>(0x80020016u));
+    Require(sceKernelTruncate_nid_postfix("", -1) == static_cast<int>(0x80020016u));
+    Require(truncate_nid_postfix(nullptr, -1) == -1 && *__error_nid_postfix() == 22);
+    Require(truncate_nid_postfix("", -1) == -1 && *__error_nid_postfix() == 22);
+    Require(sceKernelTruncate_nid_postfix(nullptr, 0) == static_cast<int>(0x8002000Eu));
     const auto cwdWriteTime = std::filesystem::last_write_time(".");
     const int emptyUtimes = sceKernelUtimes_nid_postfix("", nullptr);
     std::error_code restoreTimeError;
@@ -972,6 +989,13 @@ int main() {
     Require(flock_nid_postfix(other, 2 | 4) == 0);
     Require(flock_nid_postfix(other, 8) == 0);
     Require(flock_nid_postfix(locked, 2 | 4) == 0);
+    Require(flock_nid_postfix(-1, 2 | 4) == -1 && *__error_nid_postfix() == 9);
+    Require(flock_nid_postfix(0x7fffffff, 1) == -1 && *__error_nid_postfix() == 9);
+    int flockPipe[2] = {-1, -1};
+    Require(pipe_nid_postfix(flockPipe) == 0);
+    Require(flock_nid_postfix(flockPipe[0], 2 | 4) == -1 && *__error_nid_postfix() == 45);
+    Require(flock_nid_postfix(flockPipe[1], 8) == -1 && *__error_nid_postfix() == 45);
+    Require(close_nid_postfix(flockPipe[0]) == 0 && close_nid_postfix(flockPipe[1]) == 0);
     Require(close_nid_postfix(locked) == 0);
     const int recycled = open_nid_postfix(presentName.c_str(), 0, 0);
     Require(recycled >= 0 && flock_nid_postfix(recycled, 8) == 0);
@@ -1121,6 +1145,28 @@ int main() {
     Require(rmdir_nid_postfix((missingName + "/").c_str()) == -1 && *__error_nid_postfix() == 2);
     Require(sceKernelRmdir((presentName + "/").c_str()) == static_cast<int>(0x80020014u));
     Require(sceKernelRmdir((missingName + "/").c_str()) == static_cast<int>(0x80020002u));
+    const auto missingChild = missingName + "/child";
+    for (const auto* blocked : {&underFile, &deepUnderFile, &missingChild}) {
+        const int expected = blocked == &missingChild ? 2 : 20;
+        FileStat blockedStatus{};
+        Require(open_nid_postfix(blocked->c_str(), 0, 0) == -1 && *__error_nid_postfix() == expected);
+        Require(open_nid_postfix(blocked->c_str(), 0x202, 0644) == -1 && *__error_nid_postfix() == expected);
+        Require(stat_nid_postfix(blocked->c_str(), &blockedStatus) == -1 && *__error_nid_postfix() == expected);
+        Require(lstat_nid_postfix(blocked->c_str(), &blockedStatus) == -1 && *__error_nid_postfix() == expected);
+        Require(access_nid_postfix(blocked->c_str(), 0) == -1 && *__error_nid_postfix() == expected);
+        Require(unlink_nid_postfix(blocked->c_str()) == -1 && *__error_nid_postfix() == expected);
+        Require(chmod_nid_postfix(blocked->c_str(), 0644) == -1 && *__error_nid_postfix() == expected);
+        Require(sceKernelTruncate_nid_postfix(blocked->c_str(), 0) == static_cast<int>(0x80020000u | static_cast<unsigned>(expected)));
+        Require(sceKernelUtimes_nid_postfix(blocked->c_str(), nullptr) == static_cast<int>(0x80020000u | static_cast<unsigned>(expected)));
+        Require(rename_nid_postfix(blocked->c_str(), (root / "renamed-target").string().c_str()) == -1 && *__error_nid_postfix() == expected);
+        if (blocked != &missingChild) Require(rename_nid_postfix(presentName.c_str(), blocked->c_str()) == -1 && *__error_nid_postfix() == expected);
+        Require(remove_nid_postfix(blocked->c_str()) == -1 && *__error_nid_postfix() == expected);
+        Require(opendir_nid_postfix(blocked->c_str()) == nullptr && *__error_nid_postfix() == expected);
+        Require(chdir_nid_postfix(blocked->c_str()) == -1 && *__error_nid_postfix() == expected);
+        for (const char* openMode : {"r", "w"}) {
+            Require(fopen_nid_postfix(blocked->c_str(), openMode) == nullptr && *__error_nid_postfix() == expected);
+        }
+    }
 #ifndef _WIN32
     const auto linkedDirectory = root / "linked-directory";
     const auto directoryLink = root / "directory-link";

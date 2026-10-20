@@ -818,6 +818,56 @@ void DccRefillTests(AgcDriver::VulkanDevice& device, std::uint32_t selectedSampl
     }
 }
 
+void DccImportWindowTests(AgcDriver::VulkanDevice& device, std::uint32_t selectedSamples) {
+    if (!AgcDriver::GuestMemory::WriteWatched()) return;
+    const ColorTargetLayout layout(Width, Height, ColorTileMode::RenderTarget, 8);
+    std::vector<std::unique_ptr<Block>> blocks;
+    struct ClearTargets {
+        AgcDriver::VulkanDevice& device;
+        ~ClearTargets() {
+            std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+            device.SubmitRecorded(true);
+            device.WaitIdle();
+            AgcDriver::Graphics::ClearMultisampleTargets(device.Device());
+            AgcDriver::Graphics::ClearCachedTextures(device.Device());
+        }
+    } clearTargets{device};
+    const Color written{0.25f, 0.25f, 0.25f, 0.25f};
+    for (const auto samples : {2u, 4u, 8u}) {
+        if (selectedSamples != 0 && samples != selectedSamples) continue;
+        blocks.push_back(std::make_unique<Block>(layout.Bytes() * samples));
+        auto& source = *blocks.back();
+        std::memset(source.data, 0, source.bytes);
+        blocks.push_back(std::make_unique<Block>(BlockBytes));
+        auto& metadata = *blocks.back();
+        std::memset(metadata.data, 0, BlockBytes);
+        auto target = DecodeTarget(source, samples);
+        target.dccAddress = metadata.Address();
+        target.dccPipeAligned = true;
+        target.dccAlphaOnMsb = true;
+        Draw(device, target, false, Float32Export, Program(written, Float32Export, 1u), false, true);
+        Require(AgcDriver::GuestMemory::ImportWatched(metadata.Address(), BlockBytes, [&] {
+            auto* first = reinterpret_cast<volatile std::uint8_t*>(metadata.data);
+            *first = *first;
+            return true;
+        }), "the import over resident multisampled DCC metadata failed");
+        Draw(device, target, false, Float32Export, Program(written, Float32Export, 1u), false, true);
+        Require(AgcDriver::GuestMemory::ImportWatched(metadata.Address(), BlockBytes, [&] {
+            auto* first = reinterpret_cast<volatile std::uint8_t*>(metadata.data);
+            *first = static_cast<std::uint8_t>(*first ^ 0xffu);
+            return true;
+        }), "the second import over resident multisampled DCC metadata failed");
+        bool refused = false;
+        try {
+            Draw(device, target, false, Float32Export, Program(written, Float32Export, 1u), false, true);
+        } catch (const std::runtime_error& error) {
+            refused = std::string_view(error.what()).find("writes to a resident multisampled DCC") != std::string_view::npos;
+        }
+        Require(refused, "a store of new bytes to resident multisampled DCC metadata within an import window was not refused");
+        programCount = 0;
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         const auto device = OpenVulkanTestDevice();
@@ -828,6 +878,7 @@ int main(int argc, char** argv) {
             try {
                 DccFastClearTests(*device, samples);
                 DccRefillTests(*device, samples);
+                DccImportWindowTests(*device, samples);
             } catch (const std::runtime_error& error) {
                 if (std::string_view(error.what()) != "AGC graphics: the device cannot render color with the target's sample count") throw;
                 std::printf("skipped, the device lacks the requested multisample color attachments: %s\n", error.what());

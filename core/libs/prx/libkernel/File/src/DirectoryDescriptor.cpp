@@ -227,3 +227,13 @@ extern "C" const char* GetDirectoryDescriptorPath_nid_no_patch(int fd, int* erro
     *error = 0;
     return path.c_str();
 }
+
+extern "C" std::uint64_t GetDirectoryDescriptorPosition_nid_no_patch(int fd) {
+#ifdef _WIN32
+    const auto position = File::SeekDirectoryDescriptor(fd, 0, 1);
+    return position && *position > 0 ? static_cast<std::uint64_t>(*position) : 0;
+#else
+    (void)fd;
+    return 0;
+#endif
+}

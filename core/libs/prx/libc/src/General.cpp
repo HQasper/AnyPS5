@@ -31,6 +31,7 @@
 #include <unistd.h>
 #endif
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/FilesystemError.hpp"
 #include "prx/libc/include/AppArchive.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 
@@ -246,6 +247,20 @@ std::vector<std::string> WithTrailingSeparator(std::vector<std::string> names, b
 }
 std::filesystem::path Resolve(WorkingDirectory& state, const char* path, bool module = false, bool archived = false) {
     std::string text(path);
+    constexpr std::size_t MaxPath = 1024;
+    constexpr std::size_t MaxName = 255;
+    if (text.size() >= MaxPath) throw std::filesystem::filesystem_error("Guest path is too long", std::make_error_code(std::errc::filename_too_long));
+    std::size_t name = 0;
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        name = text[index] == '/' || text[index] == '\\' ? 0 : name + 1;
+        if (name <= MaxName) continue;
+        const std::size_t end = index + 1 - name;
+        std::error_code status;
+        if (end == 0 || std::filesystem::is_directory(Resolve(state, text.substr(0, end).c_str()), status)) {
+            throw std::filesystem::filesystem_error("Guest path name is too long", std::make_error_code(std::errc::filename_too_long));
+        }
+        break;
+    }
     for (auto& character : text) if (character == '\\') character = '/';
 #ifdef _WIN32
     // Preserve the existing ability to pass explicit native drive paths.
@@ -584,7 +599,7 @@ extern "C" int APS5_VABI chdir_nid_postfix(const char* path) {
         const auto resolved = Resolve(state, path, false, true);
         AppArchiveRefuseOnly_nid_no_patch(resolved, path, "changing the working directory to");
         const int error = SetWorkingDirectory(state, resolved);
-        if (error) { errno = error; return -1; }
+        if (error) { errno = error == 2 ? NotFoundError_nid_no_patch(resolved) : error; return -1; }
         return 0;
     } catch (const std::bad_alloc&) { errno = 12; return -1; }
       catch (const std::filesystem::filesystem_error& error) { errno = DirectoryFailure(error.code()); return -1; }
