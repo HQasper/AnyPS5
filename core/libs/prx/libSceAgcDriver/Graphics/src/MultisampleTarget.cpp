@@ -48,6 +48,10 @@ bool sameTarget(const ColorTarget& a, const ColorTarget& b) {
     return a.surfaceAddress == b.surfaceAddress && a.format == b.format && a.extent.width == b.extent.width && a.extent.height == b.extent.height && a.samples == b.samples;
 }
 
+bool recreated(const ColorTarget& resident, const ColorTarget& use) {
+    return use.dccAddress != 0 && use.pipeBankXor != resident.pipeBankXor && use.address == resident.address && use.dccAddress == resident.dccAddress && use.dccControl == resident.dccControl && use.dccAlphaOnMsb == resident.dccAlphaOnMsb && use.dccPipeAligned == resident.dccPipeAligned && use.cmaskAddress == resident.cmaskAddress && use.cmaskBytes == resident.cmaskBytes && use.tileMode == resident.tileMode && use.elementBytes == resident.elementBytes;
+}
+
 VkClearColorValue fastClearColor(const ColorTarget& target) {
     Require(target.elementBytes != 0 && target.elementBytes <= sizeof(target.clearWords) && 16u % target.elementBytes == 0, "the fast clear of a multisampled target over 64-bit texels is not modeled");
     std::array<std::byte, 16> texels{};
@@ -219,6 +223,24 @@ public:
             const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             context.Resolved(&DeviceFunctions::cmdClearColorImage, "vkCmdClearColorImage")(commands, image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
             RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            if (recorder != nullptr) Recorder::CountBarriers(Recorder::CommandClass::Draw, 2);
+        });
+    }
+
+    void Recreate(const ColorTarget& use) {
+        SettleStorageWrites();
+        target = use;
+        cmask = MultisampledCmask(use.cmaskAddress, use.cmaskBytes);
+        colorFill = MultisampledColorFill(use);
+        fromTexture = false;
+        dccRanges.clear();
+        metadataValid = std::make_shared<std::atomic<bool>>(true);
+        const auto initial = initialDccClear(use);
+        recordCommands(context, [&](VkCommandBuffer commands, Recorder* recorder) {
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            context.Resolved(&DeviceFunctions::cmdClearColorImage, "vkCmdClearColorImage")(commands, image, VK_IMAGE_LAYOUT_GENERAL, &initial, 1, &range);
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
             if (recorder != nullptr) Recorder::CountBarriers(Recorder::CommandClass::Draw, 2);
         });
     }
@@ -537,6 +559,17 @@ MultisampleTarget& acquire(const Context& context, const ColorTarget& use) {
     for (const auto& target : targets()) {
         if (!target->active->load(std::memory_order_acquire)) continue;
         if (target->context.device != context.device || !sameTarget(target->target, use)) continue;
+        if (recreated(target->target, use)) {
+            {
+                std::unique_lock lock(guardedMutex());
+                std::erase_if(guarded(), [&](const auto& range) { return range.active == target->active; });
+                anyGuarded().store(!guarded().empty(), std::memory_order_release);
+            }
+            target->Recreate(use);
+            guard(context, use, target->active, target->metadataValid);
+            target->ApplyFastClear(use);
+            return *target;
+        }
         if (target->fromTexture && use.cmaskAddress != 0) {
             target->fromTexture = false;
             target->cmask = MultisampledCmask(use.cmaskAddress, use.cmaskBytes);
@@ -967,6 +1000,10 @@ void ClearMultisampleTargets(VkDevice device) {
 
 void RequireNoMultisampleTarget(std::uint64_t address, std::size_t bytes, const char* access) {
     RequireNoResidentDepthRead_nid_no_patch(address, bytes);
+    RequireNoMultisampleColorTarget(address, bytes, access);
+}
+
+void RequireNoMultisampleColorTarget(std::uint64_t address, std::size_t bytes, const char* access) {
     if (bytes == 0 || !anyGuarded().load(std::memory_order_acquire)) return;
     std::shared_lock lock(guardedMutex());
     for (const auto& range : guarded()) {
