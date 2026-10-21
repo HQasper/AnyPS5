@@ -97,6 +97,7 @@ constexpr int PcAclPathMax = 60;
 constexpr int PcMacPresent = 63;
 constexpr int PcAclNfs4 = 64;
 constexpr int GuestAtSymlinkNofollow = 0x0200;
+constexpr int GuestAtSymlinkFollow = 0x0400;
 
 int GuestFileError(int error) {
     switch (error) {
@@ -118,6 +119,12 @@ int GuestFileError(int error) {
 std::int64_t Fail(int error) {
     *__error_nid_postfix() = error;
     return -1;
+}
+
+void RequireGuestOwner(const char* call, std::uint32_t uid, std::uint32_t gid) {
+    constexpr std::uint32_t Unchanged = 0xFFFFFFFFu;
+    if (uid != 0 && uid != Unchanged) NotImplemented_nid_no_patch((std::string(call) + ": an owner other than the guest user").c_str());
+    if (gid != 0 && gid != Unchanged) NotImplemented_nid_no_patch((std::string(call) + ": a group other than the guest group").c_str());
 }
 
 int GuestError(const std::error_code& error) {
@@ -355,6 +362,20 @@ int APS5_VABI link_nid_postfix(const char* existing, const char* created) {
     return 0;
 }
 
+int APS5_VABI linkat_nid_postfix(int fd1, const char* path1, int fd2, const char* path2, int flag) {
+    if (flag & ~GuestAtSymlinkFollow) return static_cast<int>(Fail(GuestEinval));
+    if (path1 == nullptr || path2 == nullptr) return static_cast<int>(Fail(GuestEfault));
+    if ((fd1 != GuestAtFdcwd && *path1 != '/') || (fd2 != GuestAtFdcwd && *path2 != '/'))
+        NotImplemented_nid_no_patch("linkat: a relative path with a directory descriptor");
+    if (flag == 0 && *path1 != '\0') {
+        std::filesystem::path source;
+        std::error_code error;
+        if (ResolvePathError_nid_no_patch(path1, source) == 0 && std::filesystem::is_symlink(std::filesystem::symlink_status(source, error)))
+            NotImplemented_nid_no_patch("linkat: a hard link to a symbolic link itself");
+    }
+    return link_nid_postfix(path1, path2);
+}
+
 int APS5_VABI fchdir_nid_postfix(int fd) {
     int error = 0;
     const char* path = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
@@ -533,9 +554,7 @@ int APS5_VABI fchmodat_nid_postfix(int fd, const char* path, int mode, int flag)
 }
 
 int APS5_VABI fchown_nid_postfix(int fd, std::uint32_t uid, std::uint32_t gid) {
-    constexpr std::uint32_t Unchanged = 0xFFFFFFFFu;
-    if (uid != 0 && uid != Unchanged) NotImplemented_nid_no_patch("fchown: an owner other than the guest user");
-    if (gid != 0 && gid != Unchanged) NotImplemented_nid_no_patch("fchown: a group other than the guest group");
+    RequireGuestOwner("fchown", uid, gid);
 #ifdef _WIN32
     if (GuestFstat(fd) != 0) return static_cast<int>(Fail(GuestEbadf));
 #else
@@ -556,6 +575,25 @@ int APS5_VABI fstatat_nid_postfix(int fd, const char* path, FileStat* sb, int fl
     const int result = StatInDirectory_nid_no_patch(fd, path, sb, flag == 0);
     if (result < 0) return static_cast<int>(Fail(result & 0xffff));
     return 0;
+}
+
+int APS5_VABI chown_nid_postfix(const char* path, std::uint32_t uid, std::uint32_t gid) {
+    RequireGuestOwner("chown", uid, gid);
+    FileStat status{};
+    return stat_nid_postfix(path, &status);
+}
+
+int APS5_VABI lchown_nid_postfix(const char* path, std::uint32_t uid, std::uint32_t gid) {
+    RequireGuestOwner("lchown", uid, gid);
+    FileStat status{};
+    return lstat_nid_postfix(path, &status);
+}
+
+int APS5_VABI fchownat_nid_postfix(int fd, const char* path, std::uint32_t uid, std::uint32_t gid, int flag) {
+    if (flag & ~GuestAtSymlinkNofollow) return static_cast<int>(Fail(GuestEinval));
+    RequireGuestOwner("fchownat", uid, gid);
+    FileStat status{};
+    return fstatat_nid_postfix(fd, path, &status, flag);
 }
 
 int APS5_VABI unlink_nid_postfix(const char* path);
