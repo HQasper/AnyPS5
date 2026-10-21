@@ -29,6 +29,8 @@
 extern "C" {
 int APS5_VABI fstatfs_nid_postfix(int, void*);
 int APS5_VABI _fstatfs_nid_postfix(int, void*);
+int APS5_VABI fstat_nid_postfix(int, FileStat*);
+std::int64_t APS5_VABI pwrite_nid_postfix(int, const void*, std::size_t, std::int64_t);
 int APS5_VABI open_nid_postfix(const char*, int, int);
 int APS5_VABI close_nid_postfix(int);
 std::int64_t APS5_VABI readlink_nid_postfix(const char*, char*, std::size_t);
@@ -256,6 +258,36 @@ void DirectoryRenameTests(const std::filesystem::path& parent) {
     Require(std::filesystem::remove(original) && std::filesystem::remove(moved) && std::filesystem::remove(fixture));
 }
 
+void FileAccessTests(const std::filesystem::path& root) {
+    const auto path = (root / "positioned.bin").string();
+    const int descriptor = open_nid_postfix(path.c_str(), SCE_KERNEL_O_RDWR | SCE_KERNEL_O_CREAT, 0644);
+    Require(descriptor >= 0);
+    Require(pwrite_nid_postfix(descriptor, "abcdef", 6, 4) == 6);
+    Require(pwrite_nid_postfix(descriptor, "XY", 2, 0) == 2);
+    Require(pwrite_nid_postfix(descriptor, nullptr, 0, 0) == 0);
+    Require(sceKernelLseek(descriptor, 0, 1) == 0);
+    char content[10] = {};
+    Require(sceKernelPread(descriptor, content, sizeof(content), 0) == 10);
+    Require(std::memcmp(content, "XY\0\0abcdef", 10) == 0);
+    Require(pwrite_nid_postfix(descriptor, "z", 1, -1) == -1 && Error() == 22);
+    Require(pwrite_nid_postfix(descriptor, nullptr, 1, 0) == -1 && Error() == 14);
+    Require(pwrite_nid_postfix(descriptor, "z", static_cast<std::size_t>(1) << 63, 0) == -1 && Error() == 22);
+    FileStat viaPublic{};
+    FileStat viaKernel{};
+    Require(fstat_nid_postfix(descriptor, &viaPublic) == 0 && sceKernelFstat(descriptor, &viaKernel) == 0);
+    Require(viaPublic.st_size == 10 && (viaPublic.st_mode & 0170000) == 0100000);
+    Require(viaPublic.st_dev == viaKernel.st_dev && viaPublic.st_ino == viaKernel.st_ino && viaPublic.st_mode == viaKernel.st_mode);
+    Require(fstat_nid_postfix(descriptor, nullptr) == -1 && Error() == 14);
+    Require(close_nid_postfix(descriptor) == 0);
+    const int reader = open_nid_postfix(path.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    Require(reader >= 0);
+    Require(pwrite_nid_postfix(reader, "z", 1, 0) == -1 && Error() == 9);
+    Require(close_nid_postfix(reader) == 0);
+    Require(fstat_nid_postfix(descriptor, &viaPublic) == -1 && Error() == 9);
+    Require(pwrite_nid_postfix(descriptor, "z", 1, 0) == -1 && Error() == 9);
+    Require(std::filesystem::remove(path));
+}
+
 int main() {
 #ifdef _WIN32
     auto hostDirectorySpelling = std::filesystem::current_path().native();
@@ -283,6 +315,7 @@ int main() {
     Require(fstatfs_nid_postfix(descriptor, nullptr) == -1 && Error() == 14);
     Require(close_nid_postfix(descriptor) == 0);
     Require(fstatfs_nid_postfix(-1, viaPublic) == -1 && Error() == 9);
+    FileAccessTests(root);
     char buffer[64];
     for (const auto& component : {std::string("missing"), std::string("file.txt")}) {
         const auto prefix = root.generic_string() + "/" + component + "/../";
