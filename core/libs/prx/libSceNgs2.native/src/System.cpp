@@ -212,6 +212,7 @@ static Ngs2SystemOption DefaultSystemOption() {
     option.max_grain_samples = 512;
     option.num_grain_samples = 256;
     option.sample_rate = 48000;
+    option.max_voice_channels = 8;
     return option;
 }
 
@@ -422,7 +423,7 @@ int APS5_VABI sceNgs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuffe
 }
 
 int APS5_VABI sceNgs2SystemResetOption(Ngs2SystemOption* option) {
-    if (option == nullptr) APS5_INVALID_ARG_EX;
+    if (option == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     *option = DefaultSystemOption();
     return SCE_NGS2_OK;
 }

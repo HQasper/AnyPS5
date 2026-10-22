@@ -1,6 +1,7 @@
 #include "SceTypes.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -45,6 +46,28 @@ bool Rejected(const char* value) {
 }
 
 int main() {
+    for (int paramId = -1; paramId <= 1001; ++paramId) {
+        Require(sceSystemServiceParamGetInt(paramId, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+        if ((paramId >= 1 && paramId <= 5) || paramId == SYSTEM_SERVICE_PARAM_ID_100 || paramId == 400) continue;
+        int value = -12345;
+        if ((paramId >= 101 && paramId <= 111) || (paramId >= 200 && paramId <= 213) || paramId == 300) {
+            bool threw = false;
+            try {
+                static_cast<void>(sceSystemServiceParamGetInt(paramId, &value));
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            Require(threw);
+        } else {
+            Require(sceSystemServiceParamGetInt(paramId, &value) == SYSTEM_SERVICE_ERROR_PARAMETER);
+        }
+        Require(value == -12345);
+    }
+    for (int paramId : {std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        int value = -12345;
+        Require(sceSystemServiceParamGetInt(paramId, &value) == SYSTEM_SERVICE_ERROR_PARAMETER);
+        Require(value == -12345);
+    }
     SetLanguage(nullptr);
     Require(Language() == SYSTEM_SERVICE_PARAM_LANG_ENGLISH_US);
     SetLanguage("");
@@ -62,7 +85,14 @@ int main() {
     SetLanguage("arabic");
     Require(sceSystemServiceParamGetInt(SYSTEM_SERVICE_PARAM_ID_LANG, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     Require(sceSystemServiceParamGetInt(SYSTEM_SERVICE_PARAM_ID_400, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
-    int enterButton = -1;
-    Require(sceSystemServiceParamGetInt(SYSTEM_SERVICE_PARAM_ID_ENTER_BUTTON_ASSIGN, &enterButton) == SYSTEM_SERVICE_OK);
-    Require(enterButton == SYSTEM_SERVICE_PARAM_ENTER_BUTTON_CROSS);
+    for (int paramId : {0, SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME, SYSTEM_SERVICE_PARAM_ID_GAME_PARENTAL_LEVEL, 8, 20, 401, 999,
+                        SYSTEM_SERVICE_PARAM_ID_ENTER_BUTTON_ASSIGN, 1001, 1008}) {
+        int unknown = -1;
+        Require(sceSystemServiceParamGetInt(paramId, &unknown) == SYSTEM_SERVICE_ERROR_PARAMETER);
+        Require(unknown == -1);
+        Require(sceSystemServiceParamGetInt(paramId, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    }
+    int param100 = -1;
+    Require(sceSystemServiceParamGetInt(SYSTEM_SERVICE_PARAM_ID_100, &param100) == SYSTEM_SERVICE_OK);
+    Require(param100 == 0);
 }

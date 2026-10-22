@@ -38,6 +38,7 @@ unsigned long long APS5_VABI strtoull_nid_postfix(const char*, char**, int);
 std::uintmax_t APS5_VABI strtoumax_nid_postfix(const char*, char**, int);
 unsigned long long APS5_VABI _Stoull_nid_postfix(const char*, char**, int);
 std::uint64_t APS5_VABI _Stoul_nid_postfix(const char*, char**, int);
+int APS5_VABI atoi_nid_postfix(const char*);
 std::int64_t APS5_VABI atol_nid_postfix(const char*);
 long long APS5_VABI atoll_nid_postfix(const char*);
 int* APS5_VABI __error_nid_postfix();
@@ -128,6 +129,7 @@ std::int64_t APS5_VABI lround_nid_postfix(double);
 std::div_t APS5_VABI div_nid_postfix(int, int);
 double APS5_VABI sinh_nid_postfix(double);
 double APS5_VABI cosh_nid_postfix(double);
+double APS5_VABI _Cosh_nid_postfix(double, double);
 float APS5_VABI coshf_nid_postfix(float);
 float APS5_VABI sinhf_nid_postfix(float);
 float APS5_VABI _FSinh_nid_postfix(float, float);
@@ -660,9 +662,9 @@ static void CheckIntegerConversions() {
         {" -0B1!", 0, 0, 3, 0},
         {"0b2", 0, 0, 1, 0},
         {"0b101", 16, 0xb101, 5, 0},
-        {" -0xz!", 0, 0, 3, 0},
-        {"0xg", 16, 0, 1, 0},
-        {"0x", 16, 0, 1, 0},
+        {" -0xz!", 0, 0, 0, 0},
+        {"0xg", 16, 0, 0, 0},
+        {"0x", 16, 0, 0, 0},
         {"z!", 36, 35, 1, 0},
         {"", 10, 0, 0, 0},
         {" \t+!", 10, 0, 0, 0},
@@ -708,8 +710,8 @@ static void CheckIntegerConversions() {
         {"0B11", 2, 0, 1, 0},
         {" +0b1!", 2, 0, 3, 0},
         {"0b101", 16, 0xb101, 5, 0},
-        {" +0Xg!", 0, 0, 3, 0},
-        {"0x!", 16, 0, 1, 0},
+        {" +0Xg!", 0, 0, 0, 0},
+        {"0x!", 16, 0, 0, 0},
         {"z!", 36, 35, 1, 0},
         {"", 10, 0, 0, 0},
         {" \t-!", 10, 0, 0, 0},
@@ -747,6 +749,26 @@ static void CheckIntegerConversions() {
     Require(*__error_nid_postfix() == 13);
     Require(_Stoul_nid_postfix("18446744073709551615", nullptr, 10) == UINT64_MAX);
     Require(_Stoul_nid_postfix("-1", nullptr, 10) == UINT64_MAX && *__error_nid_postfix() == 13);
+    for (const int base : {-1, 1, 37}) {
+        const char text[] = " 12";
+        const auto rejects = [&](auto parse, int error) {
+            char* end = nullptr;
+            *__error_nid_postfix() = 0;
+            Require(parse(text, &end, base) == 0 && end == text && *__error_nid_postfix() == error);
+        };
+        rejects(strtol_nid_postfix, EINVAL);
+        rejects(strtoul_nid_postfix, EINVAL);
+        rejects(strtoll_nid_postfix, EINVAL);
+        rejects(strtoull_nid_postfix, EINVAL);
+        rejects(strtoimax_nid_postfix, 0);
+        rejects(strtoumax_nid_postfix, 0);
+        rejects(_Stoull_nid_postfix, 0);
+        rejects(_Stoul_nid_postfix, 0);
+    }
+    *__error_nid_postfix() = 0;
+    Require(atoi_nid_postfix("9223372036854775808") == 0 && atoi_nid_postfix("4294967297") == 1 && atoi_nid_postfix("-9223372036854775809") == -1);
+    Require(atol_nid_postfix("9223372036854775808") == INT64_MIN && atoll_nid_postfix("-9223372036854775809") == INT64_MAX && *__error_nid_postfix() == 0);
+    Require(atol_nid_postfix("99999999999999999999") == -1 && *__error_nid_postfix() == ERANGE);
     *__error_nid_postfix() = 0;
 }
 
@@ -818,6 +840,14 @@ static void CheckExtendedMath() {
 
 static void CheckHyperbolic() {
     const double infinity = std::numeric_limits<double>::infinity();
+    Require(_Cosh_nid_postfix(0.0, 2.0) == 2.0);
+    Require(Near(_Cosh_nid_postfix(1.0, 2.0), 3.0861612696304874, 1e-15));
+    Require(Near(_Cosh_nid_postfix(-1.0, -2.0), -3.0861612696304874, 1e-15));
+    Require(std::isinf(_Cosh_nid_postfix(infinity, -1.0)) && std::signbit(_Cosh_nid_postfix(infinity, -1.0)));
+    Require(std::isnan(_Cosh_nid_postfix(infinity, 0.0)));
+    Require(Near(_Cosh_nid_postfix(711.0, 1e-300), 0x1.2190c08e2f1a4p+28, 1e-15));
+    Require(_Cosh_nid_postfix(720.0, 0.0) == 0.0 && !std::signbit(_Cosh_nid_postfix(720.0, 0.0)));
+    Require(_Cosh_nid_postfix(720.0, -0.0) == 0.0 && std::signbit(_Cosh_nid_postfix(720.0, -0.0)));
     Require(sinh_nid_postfix(0.) == 0. && std::signbit(sinh_nid_postfix(-0.)));
     Require(cosh_nid_postfix(0.) == 1. && coshf_nid_postfix(0.f) == 1.f);
     Require(asinh_nid_postfix(0.) == 0. && std::signbit(asinh_nid_postfix(-0.)) && std::signbit(asinhf_nid_postfix(-0.f)));

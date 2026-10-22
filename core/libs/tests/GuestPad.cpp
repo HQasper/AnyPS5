@@ -32,6 +32,9 @@ int APS5_VABI scePadIsRemoteController(int, bool*);
 int APS5_VABI scePadGetAccessibilityControllerState(int, std::uint32_t*);
 int APS5_VABI scePadGetControllerInformation(int, PadControllerInformation*);
 int APS5_VABI scePadGetExtControllerInformation(int, void*);
+int APS5_VABI scePadResetLightBar(int);
+int APS5_VABI scePadSetLightBar(int, const PadLightBarParam*);
+int APS5_VABI scePadSetMotionSensorState(int, bool);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -144,6 +147,17 @@ static void CheckAngularVelocityDeadband(int handle) {
     Require(scePadReadState(handle, &data) == PAD_OK);
     Require(data.angular_velocity_x == 0.01f && data.angular_velocity_z == -0.017f);
     PadPublishInput_nid_postfix(PadInputState{});
+}
+
+static void CheckStickDeadZones(int handle) {
+    PadControllerInformation info{};
+    Require(scePadGetControllerInformation(handle, &info) == PAD_OK);
+    Require(info.stickInfo.deadZoneLeft == 13 && info.stickInfo.deadZoneRight == 13);
+    std::array<std::uint8_t, 0x2c> extended{};
+    Require(scePadGetExtControllerInformation(handle, extended.data()) == PAD_OK);
+    PadControllerInformation base{};
+    std::memcpy(&base, extended.data(), sizeof(base));
+    Require(base.stickInfo.deadZoneLeft == 13 && base.stickInfo.deadZoneRight == 13);
 }
 
 static void CheckTouchContact() {
@@ -439,6 +453,7 @@ int main() {
     CheckTouchContact();
     CheckVirtualTouchContact();
     CheckTouchPadInformation(handle);
+    CheckStickDeadZones(handle);
     CheckPartialTrigger();
     CheckReadQueue(handle);
     CheckTapBetweenReads();
@@ -447,6 +462,15 @@ int main() {
     CheckRemoteController(handle);
     CheckAccessibilityControllerState(handle);
     CheckInjectedState(commandPath);
+    PadLightBarParam lightBar{255, 128, 64};
+    Require(scePadSetLightBar(handle, &lightBar) == PAD_OK);
+    Require(scePadSetLightBar(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadSetLightBar(handle + 1, &lightBar) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadResetLightBar(handle) == PAD_OK);
+    Require(scePadResetLightBar(handle + 1) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadSetMotionSensorState(handle, true) == PAD_OK);
+    Require(scePadSetMotionSensorState(handle, false) == PAD_OK);
+    Require(scePadSetMotionSensorState(handle + 1, true) == PAD_ERROR_INVALID_HANDLE);
     Require(scePadSetVibrationMode(handle, 1) == 0);
     Require(scePadSetVibrationMode(handle, 2) == 0);
     Require(scePadSetVibrationMode(handle, 3) == 0);

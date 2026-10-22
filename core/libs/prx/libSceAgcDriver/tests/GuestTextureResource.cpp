@@ -123,6 +123,15 @@ void RunGuestTextureResourceTests() {
     fmask.dstSelY = fmask.dstSelZ = fmask.dstSelW = 0u;
     const auto fmaskResource = DecodeTextureResource(pack(fmask));
     Require(fmaskResource.format == 20u && fmaskResource.dimension == TextureDimension::k2D && fmaskResource.tileMode == TextureTileMode::kZ64KBX, "uncompressed 32-bit FMASK did not use an integer Z surface");
+    auto compressedFmask = fmask;
+    compressedFmask.metaCompress = compressedFmask.metaPipeAligned = true;
+    compressedFmask.metaAddr = 0x123456789aull;
+    const auto compressedResource = DecodeTextureResource(pack(compressedFmask));
+    Require(compressedResource.fmaskCmaskAddress == compressedFmask.metaAddr << 8u && compressedResource.dccAddress == 0u && compressedResource.dccPipeAligned, "compressed FMASK CMASK was interpreted as color DCC");
+    compressedFmask.metaPipeAligned = false;
+    rejectFields(compressedFmask, "FMASK CMASK metadata must be pipe aligned");
+    compressedFmask.metaPipeAligned = compressedFmask.writeCompress = true;
+    rejectFields(compressedFmask, "FMASK CMASK compression is not implemented");
     Fields fmaskArray = fmask;
     fmaskArray.typeRaw = 13u;
     fmaskArray.depth = 2u;

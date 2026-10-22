@@ -140,7 +140,8 @@ GuestTextureResource DecodeTextureResource(std::span<const std::uint32_t> words)
     const bool fmask = ShaderRecompiler::IsFmaskTextureFormat(static_cast<ShaderRecompiler::IrBufferFormat>(format));
     if (fmask) {
         Require(format == static_cast<std::uint32_t>(ShaderRecompiler::IrBufferFormat::Fmask32_S8_F8), "guest FMASK format is not implemented");
-        Require(!metaCompress && !writeCompress, "FMASK CMASK compression is not implemented");
+        Require(!writeCompress && (!metaCompress || metaAddr != 0u), "FMASK CMASK compression is not implemented without readable metadata");
+        Require(!metaCompress || metaPipeAligned, "FMASK CMASK metadata must be pipe aligned");
         Require((typeRaw == 9u || typeRaw == 13u) && tileModeRaw == 24u && baseLevel == 0u && lastLevel == 0u && maxMip == 0u, "FMASK reads require a single-mip 2D or 2D-array Z_64KB_X surface");
         for (const auto selector : {dstSelX, dstSelY, dstSelZ, dstSelW}) Require(selector == 0u || selector == 1u || selector == 4u, "FMASK destination channel selector is not implemented");
     }
@@ -229,7 +230,8 @@ GuestTextureResource DecodeTextureResource(std::span<const std::uint32_t> words)
     result.dstSelZ = static_cast<std::uint8_t>(dstSelZ);
     result.dstSelW = static_cast<std::uint8_t>(dstSelW);
     result.bcSwizzle = static_cast<std::uint8_t>(bcSwizzle);
-    result.dccAddress = metaCompress ? metaAddr << 8u : 0u;
+    result.dccAddress = metaCompress && !fmask ? metaAddr << 8u : 0u;
+    result.fmaskCmaskAddress = metaCompress && fmask ? metaAddr << 8u : 0u;
     result.dccAlphaOnMsb = dccAlphaPos;
     result.dccPipeAligned = metaPipeAligned;
     result.iterate256 = iterate256;

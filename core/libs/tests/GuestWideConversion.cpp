@@ -69,7 +69,7 @@ static void CheckStoul() {
     CheckStoul(u"017", 0, 15, 3, 0, "octal with base 0");
     CheckStoul(u"z", 36, 35, 1, 0, "base 36");
     CheckStoul(u"0b1", 0, 0, 1, 0, "no binary prefix");
-    CheckStoul(u"0xg", 16, 0, 1, 0, "prefix without digits");
+    CheckStoul(u"0xg", 16, 0, 0, 0, "prefix without digits");
     CheckStoul(u"12é3", 10, 12, 2, 0, "stops at a non-ASCII unit");
     CheckStoul(u"　5", 10, 0, 0, 0, "non-ASCII space is not skipped");
     CheckStoul(u"", 10, 0, 0, 0, "empty string");
@@ -139,13 +139,15 @@ static void CheckScan() {
 
     double real = 0;
     Require(swscanf_s_nid_postfix(u"1.5e3", u"%lf", &real) == 1 && real == 1500.0, "%lf");
-    Require(swscanf_s_nid_postfix(u"1e+x", u"%lf", &real) == 0, "%lf incomplete exponent is a matching failure");
+    Require(swscanf_s_nid_postfix(u"1e+", u"%lf", &real) == 1 && real == 1.0, "%lf converts the mantissa of an incomplete exponent");
     long double extended = 0;
     Require(swscanf_s_nid_postfix(u"2.25", u"%Lf", &extended) == 1 && extended == 2.25L, "%Lf");
     float single = 0;
     Require(swscanf_s_nid_postfix(u"-inf", u"%f", &single) == 1 && single == -std::numeric_limits<float>::infinity(), "%f infinity");
 
     Require(swscanf_s_nid_postfix(u"a", u"b%d", &first) == 0, "literal mismatch is a matching failure");
+    Require(swscanf_s_nid_postfix(u"", u"x") == 0, "literal at end of input returns zero");
+    Require(swscanf_s_nid_postfix(u"", u"%%") == -1, "percent literal at end of input is an input failure");
     Require(swscanf_s_nid_postfix(u"", u"%d", &first) == -1, "empty input is an input failure");
     Require(swscanf_s_nid_postfix(u"   ", u"%ls", text, std::size_t{6}) == -1, "white space only is an input failure");
     Require(swscanf_s_nid_postfix(u"5", u"%d%d", &first, &second) == 1, "input failure after a conversion");
@@ -203,13 +205,15 @@ static void CheckUnsizedScan() {
 
     double real = 0;
     Require(swscanf_nid_postfix(u"1.5e3", u"%lf", &real) == 1 && real == 1500.0, "swscanf %lf");
-    Require(swscanf_nid_postfix(u"1e+x", u"%lf", &real) == 0, "swscanf %lf incomplete exponent is a matching failure");
+    Require(swscanf_nid_postfix(u"1e+", u"%lf", &real) == 1 && real == 1.0, "swscanf %lf converts the mantissa of an incomplete exponent");
     long double extended = 0;
     Require(swscanf_nid_postfix(u"2.25", u"%Lf", &extended) == 1 && extended == 2.25L, "swscanf %Lf");
     float single = 0;
     Require(swscanf_nid_postfix(u"-inf", u"%f", &single) == 1 && single == -std::numeric_limits<float>::infinity(), "swscanf %f infinity");
 
     Require(swscanf_nid_postfix(u"a", u"b%d", &first) == 0, "swscanf literal mismatch is a matching failure");
+    Require(swscanf_nid_postfix(u"", u"x") == 0, "swscanf literal at end of input returns zero");
+    Require(swscanf_nid_postfix(u"", u"%%") == -1, "swscanf percent literal at end of input is an input failure");
     Require(swscanf_nid_postfix(u"3 x", u"%d%d", &first, &second) == 1 && first == 3, "swscanf partial match");
     Require(swscanf_nid_postfix(u"", u"%d", &first) == -1, "swscanf empty input is an input failure");
     Require(swscanf_nid_postfix(u"", u"%ls", text) == -1, "swscanf empty input before %ls");

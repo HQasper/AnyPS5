@@ -1,10 +1,34 @@
 #include "Ngs2Test.hpp"
 
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
 static void Status(int actual, int expected, const char* message) {
     if (actual != expected) throw std::runtime_error(message);
+}
+
+static void CheckResetOption() {
+    Status(sceNgs2SystemResetOption(nullptr), static_cast<int>(0x804A8010u), "null system option did not return the invalid out address error");
+    constexpr std::uint64_t size = 0x90;
+    constexpr std::uint32_t maxGrainSamples = 512;
+    constexpr std::uint32_t numGrainSamples = 256;
+    constexpr std::uint32_t sampleRate = 48000;
+    constexpr std::uint32_t maxVoiceChannels = 8;
+    unsigned char expected[0x90] = {};
+    std::memcpy(expected + 0x00, &size, sizeof(size));
+    std::memcpy(expected + 0x6c, &maxGrainSamples, sizeof(maxGrainSamples));
+    std::memcpy(expected + 0x70, &numGrainSamples, sizeof(numGrainSamples));
+    std::memcpy(expected + 0x74, &sampleRate, sizeof(sampleRate));
+    std::memcpy(expected + 0x78, &maxVoiceChannels, sizeof(maxVoiceChannels));
+    static_assert(sizeof(Ngs2SystemOption) == sizeof(expected));
+    Ngs2SystemOption option;
+    std::memset(&option, 0xAB, sizeof(option));
+    Status(sceNgs2SystemResetOption(&option), SCE_NGS2_OK, "system option reset failed");
+    Require(std::memcmp(&option, expected, sizeof(expected)) == 0);
+    Ngs2ContextBufferInfo query{};
+    Status(sceNgs2SystemQueryBufferSize(&option, &query), SCE_NGS2_OK, "reset system option was rejected");
 }
 
 int main() {
@@ -39,6 +63,7 @@ int main() {
         Status(sceNgs2SystemDestroy(system, nullptr), SCE_NGS2_OK, "valid system destroy failed");
         Status(sceNgs2SystemGetUserData(system, &value), systemError, "retired system returned the wrong error");
         Require(value == sentinel);
+        CheckResetOption();
         std::cout << "NGS2 PS5 handle errors and validation precedence checked\n";
         return 0;
     } catch (const std::exception& error) {

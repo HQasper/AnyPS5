@@ -15,9 +15,14 @@ int APS5_VABI sceAudioOut2Initialize(void) {
     return 0;
 }
 
+int APS5_VABI sceAudioOut2InitializeEx(std::uint32_t param) {
+    (void)param;
+    return sceAudioOut2Initialize();
+}
+
 int APS5_VABI sceAudioOut2Set3DLatency(int userId, std::uint32_t output) {
-    (void)userId;
     if (output > MAX_SUPPORTED_3D_OUTPUT) return SCE_AUDIO_OUT2_ERROR_INVALID_PARAM;
+    if (userId != 0 && (userId != 0xFF || output == 0)) return SCE_AUDIO_OUT2_ERROR_INVALID_PARAM;
     return 0;
 }
 

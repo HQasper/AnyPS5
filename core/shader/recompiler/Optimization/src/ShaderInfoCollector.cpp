@@ -73,6 +73,35 @@ void ValidateOptions(const IrProgram& program, ShaderStageInputInfo inputInfo) {
     }
 }
 
+void EnsurePixelInterpolatorCoverage(const IrProgram& program, ShaderPixelInputInfo& pixel) {
+    std::uint32_t needed = pixel.inputNum;
+    const auto consider = [&](std::uint32_t attribute) {
+        if (attribute < 32u && attribute + 1u > needed) needed = attribute + 1u;
+    };
+    for (const auto& block : program.Blocks()) {
+        for (const IrValue* inst : block->Instructions()) {
+            switch (inst->Opcode()) {
+                case IrOpcode::GetAttribute:
+                case IrOpcode::GetInterpolationParameter:
+                case IrOpcode::GetInterpolationParameterF16:
+                case IrOpcode::InterpolateHostP1:
+                case IrOpcode::InterpolateHostP2: {
+                    const IrValue* attribute = inst->Argument(0)->Resolve();
+                    if (attribute->HasImmediate() && attribute->Type() == IrType::U32) consider(attribute->ImmediateU32());
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+    if (needed <= pixel.inputNum) return;
+    for (std::uint32_t input = pixel.inputNum; input < needed; ++input) {
+        pixel.interpolatorSettings[input] = 0x20u;
+    }
+    pixel.inputNum = needed;
+}
+
 void ValidateValueReferences(const IrProgram& program, ShaderStageInputInfo inputInfo) {
     for (const auto& block : program.Blocks()) {
         for (const IrValue* inst : block->Instructions()) {
@@ -246,7 +275,7 @@ bool IsPixelParameterFlat(const ShaderPixelInputInfo& pixel, std::uint32_t input
 }
 
 void CollectPixelInputs(const IrProgram& program, const ShaderPixelInputInfo* pixel, ShaderInfo& info) {
-    if (pixel->HasPositionInput() || pixel->psDitheredAlphaToCoverage || pixel->QuadMasked() || pixel->SampleLocationsVary()) {
+    if (pixel->HasPositionInput() || pixel->psDitheredAlphaToCoverage || pixel->QuadMasked() || pixel->SampleLocationsVary() || pixel->ReordersSamples()) {
         AddInput(info, StageInputKind::FragCoord, 0, 4, "gl_FragCoord");
     }
     if (pixel->psFrontFace) {
@@ -256,6 +285,8 @@ void CollectPixelInputs(const IrProgram& program, const ShaderPixelInputInfo* pi
     std::array<bool, 32> perVertex {};
     std::array<bool, 32> interpolated {};
     std::array<bool, 32> halfRead {};
+    std::array<bool, 32> readsP10 {};
+    std::array<bool, 32> readsP20 {};
     for (const auto& block : program.Blocks()) {
         for (const IrValue* inst : block->Instructions()) {
             if (inst->Opcode() == IrOpcode::GetAttribute) {
@@ -269,7 +300,9 @@ void CollectPixelInputs(const IrProgram& program, const ShaderPixelInputInfo* pi
                 const auto input = inst->Argument(0)->Resolve()->ImmediateU32();
                 const auto mode = inst->Argument(2)->Resolve()->ImmediateU32();
                 read[input] = true;
-                perVertex[input] = perVertex[input] || mode == 1u || !IsPixelParameterFlat(*pixel, input);
+                readsP10[input] = readsP10[input] || mode == 0u;
+                readsP20[input] = readsP20[input] || mode == 1u;
+                perVertex[input] = perVertex[input] || (readsP10[input] && readsP20[input]) || !IsPixelParameterFlat(*pixel, input);
             } else if (inst->Opcode() == IrOpcode::GetInterpolationParameterF16) {
                 const auto input = inst->Argument(0)->Resolve()->ImmediateU32();
                 const bool high = inst->Argument(3)->Resolve()->ImmediateU32() != 0u;
@@ -548,6 +581,9 @@ void CollectSamplerUses(const IrProgram& program, ShaderInfo& info) {
 void ShaderInfoCollector::Collect(IrProgram& program, const ShaderStageInputInfo& inputInfo) const {
     if (!program.Resources().resourceTrackingComplete || program.Metadata().shaderInfoComplete) {
         return Fail(!program.Resources().resourceTrackingComplete ? "shader resources were not tracked" : "shader info already collected");
+    }
+    if (program.Resources().stage == IrShaderStage::Pixel && inputInfo.pixel != nullptr) {
+        EnsurePixelInterpolatorCoverage(program, const_cast<ShaderPixelInputInfo&>(*inputInfo.pixel));
     }
     ValidateOptions(program, inputInfo);
     ValidateValueReferences(program, inputInfo);
