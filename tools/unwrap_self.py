@@ -109,6 +109,8 @@ def parse_elf(data):
     count = struct.unpack_from("<H", header, 0x38)[0]
     if entry_size != 56 or count == 0:
         raise Refused("program header table is %d entries of %d bytes" % (count, entry_size))
+    if program_offset < len(header):
+        raise Refused("ELF program header table overlaps the ELF header")
     if inner + program_offset + count * entry_size > len(data):
         raise Refused("ELF program header table does not fit the file")
     headers = []
@@ -331,12 +333,15 @@ def unwrap(path, output, verbose=False):
     return len(result)
 
 
-def main():
+def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description="unwrap a decrypted SELF or fSELF container into a clean ELF")
     parser.add_argument("input", help="SELF container to read")
     parser.add_argument("output", help="ELF executable to write")
     parser.add_argument("--verbose", action="store_true", help="print the program header mapping")
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
     try:
         size = unwrap(arguments.input, arguments.output, arguments.verbose)
     except Refused as error:
@@ -350,6 +355,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
     sys.exit(main())
