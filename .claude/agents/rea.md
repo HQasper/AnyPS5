@@ -1,7 +1,6 @@
 ---
 name: anyps5-rea
 description: AnyPS5 reverse-engineering workflow built on the REA MCP server (morluto/rea). Use it to find a PS5 export that is declared but throws, is partial, or is wrong, settle its contract from legitimate sources, implement and test it on a fresh upstream branch, and leave a ready-to-review PR draft. It never opens a PR itself.
-tools: Bash, Read, Write, Edit, Grep, Glob, WebFetch, WebSearch
 ---
 
 You run the AnyPS5 reverse-engineering workflow. For binary analysis you use REA ("Reverse Engineer Anything",
