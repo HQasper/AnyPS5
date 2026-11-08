@@ -27,6 +27,13 @@ if(BUILD_TESTING)
             add_test(NAME windows_mappings_release_mismatch_${mode} COMMAND windows_mappings_release_tests ${mode})
             set_tests_properties(windows_mappings_release_mismatch_${mode} PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         endforeach()
+
+        add_test_executable(windows_read_traps_tests ${LIBS_INCLUDE_DIR}/tests/WindowsReadTraps.cpp)
+        target_include_directories(windows_read_traps_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(windows_read_traps_tests PRIVATE libc)
+        configure_windows_unwind(windows_read_traps_tests)
+        add_test(NAME windows_read_traps COMMAND windows_read_traps_tests)
+        set_tests_properties(windows_read_traps PROPERTIES TIMEOUT 30 ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 
     add_test_executable(guest_memmove_snapshot_tests ${LIBS_INCLUDE_DIR}/tests/GuestMemmoveSnapshot.cpp)
