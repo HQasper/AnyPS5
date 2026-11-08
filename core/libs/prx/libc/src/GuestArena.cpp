@@ -663,6 +663,10 @@ void GuestArenaSetProtection_nid_postfix(std::uintptr_t address, std::size_t byt
     noteAccess(reinterpret_cast<const void*>(address), bytes);
 }
 
+void GuestArenaEndProtection_nid_postfix(std::uintptr_t address, std::size_t bytes) {
+    WindowsMappings::Get().EndProtection(address, bytes);
+}
+
 bool GuestArenaHandleWrite_nid_postfix(std::uintptr_t address) {
     return WindowsMappings::Get().HandleWrite(address);
 }

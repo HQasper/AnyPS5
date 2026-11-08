@@ -43,6 +43,10 @@
 #define APS5_GUEST_WRITE_WATCH 1
 #endif
 
+#ifdef _WIN32
+#include "prx/libc/include/WindowsMappings.hpp"
+#endif
+
 namespace GuestWriteWatch {
 namespace {
 
@@ -1150,15 +1154,27 @@ bool GuestWriteWatchCollectArmed_nid_postfix(std::uintptr_t address, std::size_t
 bool GuestWriteWatchSetReadTrapResolver_nid_postfix(void (*resolve)(std::uintptr_t begin, std::uintptr_t end)) {
 #if defined(__APPLE__)
     return Watch::Get().SetReadTrapResolver(resolve);
+#elif defined(_WIN32)
+    return std::getenv("APS5_NO_WINDOWS_READ_TRAP") == nullptr && GuestArena::WindowsReadTraps::Get().SetResolver(resolve);
 #else
     static_cast<void>(resolve);
     return false;
 #endif
 }
 
+void GuestWriteWatchSetReadTrapBypass_nid_postfix(bool (*bypass)()) {
+#if defined(_WIN32)
+    GuestArena::WindowsReadTraps::Get().SetBypass(bypass);
+#else
+    static_cast<void>(bypass);
+#endif
+}
+
 bool GuestWriteWatchTrapReads_nid_postfix(std::uintptr_t address, std::size_t bytes) {
 #if defined(__APPLE__)
     return bytes != 0 && address + bytes > address && Watch::Get().TrapReads(address, address + bytes);
+#elif defined(_WIN32)
+    return bytes != 0 && address + bytes > address && GuestArena::WindowsMappings::Get().TrapReads(address, bytes);
 #else
     static_cast<void>(address);
     static_cast<void>(bytes);
@@ -1169,6 +1185,8 @@ bool GuestWriteWatchTrapReads_nid_postfix(std::uintptr_t address, std::size_t by
 void GuestWriteWatchReleaseReads_nid_postfix(std::uintptr_t address, std::size_t bytes) {
 #if defined(__APPLE__)
     if (bytes != 0 && address + bytes > address) Watch::Get().ReleaseReads(address, address + bytes);
+#elif defined(_WIN32)
+    if (bytes != 0 && address + bytes > address) GuestArena::WindowsReadTraps::Get().Release(address, address + bytes);
 #else
     static_cast<void>(address);
     static_cast<void>(bytes);

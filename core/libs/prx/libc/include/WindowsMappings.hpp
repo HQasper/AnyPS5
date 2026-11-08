@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include "prx/libc/include/WindowsReadTraps.hpp"
 
 namespace GuestArena {
 
@@ -96,6 +97,7 @@ public:
                     mapped->second.armed = 0;
                     invalidate(mapped->first, mapped->second);
                 }
+                WindowsReadTraps::Get().Drop(cursor, stop, false);
                 DWORD previous;
                 if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous)) fail("protect guest memory");
                 cursor = stop;
@@ -234,7 +236,10 @@ public:
     }
 
     void SetProtection(std::uintptr_t address, std::size_t bytes, DWORD protection) {
+        WindowsReadTraps::Get().WithoutTraps(address, address + bytes);
         std::lock_guard lock(mutex);
+        protecting.emplace(address, address + bytes);
+        WindowsReadTraps::Get().Drop(address, address + bytes, false);
         disown(address, address + bytes);
         collectableRanges.clear();
         for (auto it = views.lower_bound(address); it != views.end() && it->first < address + bytes; ++it) {
@@ -366,6 +371,7 @@ public:
     }
 
     bool BeginHostWrite(std::uintptr_t address, std::size_t bytes, bool store = true) {
+        if (store) WindowsReadTraps::Get().WithoutTraps(address, address + bytes);
         std::lock_guard lock(mutex);
         const auto first = views.lower_bound(address & ~(pageBytes - 1));
         const auto end = address + bytes;
@@ -374,6 +380,7 @@ public:
         }
         disown(address, end);
         ownedHostAccess.emplace(address, end);
+        WindowsReadTraps::Get().Drop(address, end, true);
         for (auto it = first; it != views.end() && it->first < end; ++it) {
             auto& view = it->second;
             if (store) ++view.hostWrites;
@@ -485,6 +492,32 @@ public:
         GetSystemInfo(&system);
         const auto base = reinterpret_cast<std::uintptr_t>(alias) & ~(static_cast<std::uintptr_t>(system.dwAllocationGranularity) - 1);
         if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(base), 0)) fail("unmap shared guest alias");
+    }
+
+    void EndProtection(std::uintptr_t address, std::size_t bytes) {
+        std::lock_guard lock(mutex);
+        eraseOwnedRange(protecting, address, address + bytes);
+    }
+
+    bool TrapReads(std::uintptr_t address, std::size_t bytes) {
+        auto& traps = WindowsReadTraps::Get();
+        if (!traps.Enabled() || bytes == 0 || address + bytes < address) return false;
+        const auto first = address & ~std::uintptr_t{subpageBytes - 1};
+        const auto last = (address + bytes + subpageBytes - 1) & ~std::uintptr_t{subpageBytes - 1};
+        std::lock_guard lock(mutex);
+        if (overlapsOwnedRange(ownedHostAccess, first, last) || overlapsOwnedRange(ownedPins, first, last) || overlapsOwnedRange(protecting, first, last)) return false;
+        for (auto cursor = first; cursor < last;) {
+            const auto base = cursor & ~(pageBytes - 1);
+            if (const auto found = views.find(base); found != views.end()) {
+                if (!found->second.resident || found->second.pins != 0) return false;
+                cursor = std::min(last, base + pageBytes);
+                continue;
+            }
+            const auto allocationEnd = privateAllocationEnd(cursor);
+            if (allocationEnd == 0) return false;
+            cursor = std::min(last, allocationEnd);
+        }
+        return traps.Trap(address, address + bytes);
     }
 
     bool Protection(std::uintptr_t address, std::uint32_t* protection) {
@@ -1107,6 +1140,7 @@ private:
         const auto run = std::prev(residentRuns.upper_bound(address));
         const auto start = run->first;
         const auto stop = run->second.end;
+        WindowsReadTraps::Get().Drop(start, stop, false);
         disown(start, stop);
         forgetOwnedPending(start, stop);
         const auto entry = indexEntry(run);
@@ -1169,6 +1203,7 @@ private:
     void evict(std::map<std::uintptr_t, Run>::iterator run) {
         const auto start = run->first;
         const auto stop = run->second.end;
+        WindowsReadTraps::Get().Drop(start, stop, false);
         disown(start, stop);
         forgetOwnedPending(start, stop);
         DWORD previous;
@@ -1358,6 +1393,7 @@ private:
     }
 
     void reset(std::uintptr_t address, std::size_t bytes) {
+        WindowsReadTraps::Get().Drop(address, address + bytes, false);
         disown(address, address + bytes);
         forgetOwnedPending(address, address + bytes);
         collectableRanges.clear();
@@ -1460,6 +1496,7 @@ private:
     std::map<std::uintptr_t, std::uint16_t> ownedPending;
     OwnedRanges ownedPins;
     OwnedRanges ownedHostAccess;
+    OwnedRanges protecting;
     std::uint64_t nextOwned = 1;
     Ranges cleanRanges;
     Ranges collectableRanges;

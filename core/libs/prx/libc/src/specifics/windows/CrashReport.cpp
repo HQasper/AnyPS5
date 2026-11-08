@@ -8,6 +8,7 @@
 #include "prx/libc/include/LogFile.hpp"
 #include "prx/libc/include/Shutdown.hpp"
 #include "prx/libc/include/CrashText.hpp"
+#include "prx/libc/include/WindowsReadTraps.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -361,6 +362,7 @@ bool HandleSse4a(EXCEPTION_POINTERS* info) {
 
 LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     static std::atomic<bool> reported{false};
+    if (const auto* trap = info->ExceptionRecord; trap->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && trap->NumberParameters >= 2 && GuestArena::WindowsReadTraps::Get().HandleFault(static_cast<std::uintptr_t>(trap->ExceptionInformation[1]), trap->ExceptionInformation[0] == 1)) return EXCEPTION_CONTINUE_EXECUTION;
     if (GuestArena::GuestArenaRecoverRead_nid_no_patch(info)) return EXCEPTION_CONTINUE_EXECUTION;
     const auto* fault = info->ExceptionRecord;
     if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && fault->ExceptionInformation[0] == 1 && GuestArena::GuestArenaHandleWrite_nid_postfix(fault->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
