@@ -139,6 +139,7 @@ std::atomic<std::uint64_t> partialUploads{0}, partialUploadBytes{0}, partialWrit
 // (Refresh).
 std::atomic<std::uint64_t> pretestSkipped{0}, unregisteredDropped{0}, keyFlipKept{0};
 std::atomic<std::uint64_t> queuedReadHeld{0};
+std::atomic<std::uint64_t> labelTrapped{0}, labelTrapHeldWaits{0};
 // Images stored by a FlushPending after a hook skip of theirs (AccessKeptByCpu), of which by the
 // hook for the read site of the last skip; images evictStale dropped (the [hooksync] and [storage] lines).
 std::atomic<std::uint64_t> flushedAfterSkip{0}, flushedAfterSkipSameSite{0}, staleEvicted{0};
@@ -215,6 +216,14 @@ void reportStorageTraffic(StorageTraffic& traffic) {
     traffic.drawnStores.clear();
     traffic.evictions.clear();
     traffic.directWriteBacks = 0;
+#if defined(_WIN32)
+    std::array<unsigned long long, 18> traps{};
+    std::array<std::uint64_t, 18> taken{};
+    if (GuestWriteWatch::GuestWriteWatchTakeReadTrapCounters_nid_postfix(taken.data(), taken.size()) == taken.size()) {
+        std::copy(taken.begin(), taken.end(), traps.begin());
+        AgcDriver::ProfilePrint_nid_no_patch("[readtraps] 10 s: label traps %llu, held-read waits %llu; traps new %llu (%.1f MiB) again %llu refused %llu + %llu by the mappings, protects %llu; faults %llu: queued %llu (%.1f ms waiting), own stores %llu, resolver thread %llu, bypassed %llu, untrapped %llu; retried %llu; resolves %llu in %.1f ms; releases %llu, drops %llu\n", take(labelTrapped), take(labelTrapHeldWaits), traps[0], traps[3] / 1048576.0, traps[1], traps[2], traps[17], traps[4], traps[5], traps[6], traps[7] / 1e6, traps[8], traps[9], traps[10], traps[11], traps[12], traps[13], traps[14] / 1e6, traps[15], traps[16]);
+    }
+#endif
 }
 
 void countStorageUpload(std::size_t path, std::uint64_t bytes) {
@@ -4726,6 +4735,7 @@ void ResolveLabelTrap(std::uintptr_t begin, std::uintptr_t end) {
     const auto bytes = static_cast<std::size_t>(end - begin);
     GuestMemory::FlushGpuWrites(begin, bytes);
     while (AgcDriver::DriverDetail::DrawPipeline::HeldReads(begin, bytes)) {
+        labelTrapHeldWaits.fetch_add(1, std::memory_order_relaxed);
         std::this_thread::sleep_for(std::chrono::microseconds(50));
         GuestMemory::FlushGpuWrites(begin, bytes);
     }
@@ -5313,6 +5323,7 @@ void StorageTexture::StoreReadbackBeforeLabel(const char* reason, VkDevice devic
 #if defined(__APPLE__) || defined(_WIN32)
             if (trap && !sharesPage(texture) && (texture->readTrapped.load(std::memory_order_acquire) || !DirectMemoryAliased_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes))) && GuestWriteWatch::GuestWriteWatchTrapReads_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes))) {
                 texture->readTrapped.store(true, std::memory_order_release);
+                labelTrapped.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 #endif

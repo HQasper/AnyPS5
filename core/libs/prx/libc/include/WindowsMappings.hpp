@@ -505,16 +505,20 @@ public:
         const auto first = address & ~std::uintptr_t{subpageBytes - 1};
         const auto last = (address + bytes + subpageBytes - 1) & ~std::uintptr_t{subpageBytes - 1};
         std::lock_guard lock(mutex);
-        if (overlapsOwnedRange(ownedHostAccess, first, last) || overlapsOwnedRange(ownedPins, first, last) || overlapsOwnedRange(protecting, first, last)) return false;
+        const auto refuse = [&] {
+            traps.CountMappingRefusal();
+            return false;
+        };
+        if (overlapsOwnedRange(ownedHostAccess, first, last) || overlapsOwnedRange(ownedPins, first, last) || overlapsOwnedRange(protecting, first, last)) return refuse();
         for (auto cursor = first; cursor < last;) {
             const auto base = cursor & ~(pageBytes - 1);
             if (const auto found = views.find(base); found != views.end()) {
-                if (!found->second.resident || found->second.pins != 0) return false;
+                if (!found->second.resident || found->second.pins != 0) return refuse();
                 cursor = std::min(last, base + pageBytes);
                 continue;
             }
             const auto allocationEnd = privateAllocationEnd(cursor);
-            if (allocationEnd == 0) return false;
+            if (allocationEnd == 0) return refuse();
             cursor = std::min(last, allocationEnd);
         }
         return traps.Trap(address, address + bytes);

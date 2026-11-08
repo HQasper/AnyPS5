@@ -208,6 +208,27 @@ void CheckConcurrentReaders() {
     Require(seen == Readers && TakeResolved().size() == Readers);
 }
 
+void CheckWideStore() {
+    Memory memory;
+    const auto label = memory.At(0x40);
+    std::uint64_t counters[18]{};
+    GuestWriteWatchTakeReadTrapCounters_nid_postfix(counters, 18);
+    Require(GuestWriteWatchSetReadTrapResolver_nid_postfix(+[](std::uintptr_t begin, std::uintptr_t end) {
+        {
+            std::lock_guard lock(resolvedMutex);
+            resolved.emplace_back(begin, end);
+        }
+        for (auto at = begin; at < end; at += Page) Write(at, stamp.load());
+    }));
+    Require(GuestWriteWatchTrapReads_nid_postfix(label, 8 * Page));
+    stamp = 0x8888;
+    Require(Read(label + 5 * Page) == 0x8888 && Read(label) == 0x8888);
+    Require(GuestWriteWatchTakeReadTrapCounters_nid_postfix(counters, 18) == 18);
+    Require(counters[0] == 1 && counters[5] == 2 && counters[6] == 1 && counters[8] == 1 && counters[13] == 1);
+    Require(TakeResolved().size() == 1);
+    Require(GuestWriteWatchSetReadTrapResolver_nid_postfix(&Resolve));
+}
+
 void CheckBypass() {
     Memory memory;
     const auto label = memory.At(7 * Page);
@@ -241,6 +262,7 @@ int main() {
         CheckResetDropsTraps();
         CheckRefusals();
         CheckConcurrentReaders();
+        CheckWideStore();
         CheckBypass();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

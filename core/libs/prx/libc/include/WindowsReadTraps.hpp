@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,28 @@ class WindowsReadTraps {
 public:
     using Resolver = void (*)(std::uintptr_t begin, std::uintptr_t end);
     using Bypass = bool (*)();
+
+    enum Counter : std::size_t {
+        Traps,
+        TrapsAgain,
+        TrapsRefused,
+        TrapBytes,
+        Protects,
+        Faults,
+        Queued,
+        QueuedWaitNs,
+        OwnStores,
+        ResolverThread,
+        Bypassed,
+        Untrapped,
+        Retried,
+        Resolves,
+        ResolveNs,
+        Releases,
+        Drops,
+        MappingRefused,
+        CounterCount
+    };
 
     static WindowsReadTraps& Get() {
         static auto* traps = new WindowsReadTraps;
@@ -50,14 +73,22 @@ public:
         const auto last = pageEnd(end);
         std::lock_guard lock(mutex);
         const auto [same, other] = traps.equal_range(begin);
-        if (std::any_of(same, other, [&](const auto& trap) { return trap.second == end; })) return true;
-        if (resolvingCovers(first, last, Owner::Any)) return false;
+        if (std::any_of(same, other, [&](const auto& trap) { return trap.second == end; })) {
+            count(TrapsAgain);
+            return true;
+        }
+        if (resolvingCovers(first, last, Owner::Any)) {
+            count(TrapsRefused);
+            return false;
+        }
         std::vector<std::pair<std::uintptr_t, Span>> added;
         const auto rollback = [&] {
             for (const auto& [from, span] : added) {
                 DWORD previous = 0;
                 VirtualProtect(reinterpret_cast<void*>(from), span.end - from, span.protection, &previous);
+                count(Protects);
             }
+            count(TrapsRefused);
             return false;
         };
         for (auto cursor = first; cursor < last;) {
@@ -71,6 +102,7 @@ public:
             if (VirtualQuery(reinterpret_cast<const void*>(cursor), &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT || memory.Type != MEM_PRIVATE || !readable(memory.Protect)) return rollback();
             const auto stop = std::min(limit, reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize);
             DWORD previous = 0;
+            count(Protects);
             if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, PAGE_NOACCESS, &previous)) return rollback();
             added.emplace_back(cursor, Span{stop, memory.Protect});
             cursor = stop;
@@ -78,6 +110,8 @@ public:
         for (const auto& [from, span] : added) runs.emplace(from, span);
         traps.emplace(begin, end);
         trapping.store(true, std::memory_order_release);
+        count(Traps);
+        count(TrapBytes, end - begin);
         return true;
     }
 
@@ -88,6 +122,7 @@ public:
         const auto found = std::find_if(first, last, [&](const auto& trap) { return trap.second == end; });
         if (found == last) return;
         traps.erase(found);
+        count(Releases);
         untrap(pageStart(begin), pageEnd(end));
     }
 
@@ -96,7 +131,9 @@ public:
         const auto first = pageStart(begin);
         const auto last = pageEnd(end);
         std::lock_guard lock(mutex);
-        for (const auto& [from, to] : takeTraps(first, last)) {
+        const auto taken = takeTraps(first, last);
+        count(Drops, taken.size());
+        for (const auto& [from, to] : taken) {
             if (from < first) untrap(pageStart(from), first);
             if (to > last) untrap(last, pageEnd(to));
         }
@@ -123,13 +160,26 @@ public:
         const auto page = pageStart(address);
         {
             std::lock_guard lock(mutex);
-            if (runAt(page) == runs.end()) return retryUntrapped(page, write);
+            if (runAt(page) == runs.end()) {
+                const bool retried = retryUntrapped(page, write);
+                if (retried) count(Retried);
+                return retried;
+            }
+            count(Faults);
+            if (restoreOwnResolving(page)) {
+                count(OwnStores);
+                return true;
+            }
             const auto pass = bypass.load(std::memory_order_acquire);
-            if (resolvingCovers(page, page + PageBytes, Owner::Self) || GetCurrentThreadId() == resolverThread.load(std::memory_order_acquire) || (pass != nullptr && pass()) || (!trapCovers(page, page + PageBytes) && !resolvingCovers(page, page + PageBytes, Owner::Any))) {
+            const auto kind = GetCurrentThreadId() == resolverThread.load(std::memory_order_acquire) ? ResolverThread : pass != nullptr && pass() ? Bypassed : !trapCovers(page, page + PageBytes) && !resolvingCovers(page, page + PageBytes, Owner::Any) ? Untrapped : CounterCount;
+            if (kind != CounterCount) {
+                count(kind);
                 restore(page, page + PageBytes);
                 return true;
             }
         }
+        count(Queued);
+        const auto start = std::chrono::steady_clock::now();
         Request request{page};
         {
             std::unique_lock lock(queueMutex);
@@ -137,6 +187,7 @@ public:
             wake.notify_one();
             finished.wait(lock, [&] { return request.done; });
         }
+        count(QueuedWaitNs, elapsedNs(start));
         return true;
     }
 
@@ -145,6 +196,16 @@ public:
         std::size_t pages = 0;
         for (const auto& [from, span] : runs) pages += (span.end - from) / PageBytes;
         return pages;
+    }
+
+    void CountMappingRefusal() {
+        count(MappingRefused);
+    }
+
+    std::size_t TakeCounters(std::uint64_t* values, std::size_t capacity) {
+        const auto filled = std::min<std::size_t>(capacity, CounterCount);
+        for (std::size_t index = 0; index < filled; ++index) values[index] = counters[index].exchange(0, std::memory_order_relaxed);
+        return filled;
     }
 
 private:
@@ -176,6 +237,24 @@ private:
 
     static std::uintptr_t pageEnd(std::uintptr_t address) {
         return (address + PageBytes - 1) & ~(PageBytes - 1);
+    }
+
+    void count(Counter counter, std::uint64_t amount = 1) {
+        counters[counter].fetch_add(amount, std::memory_order_relaxed);
+    }
+
+    static std::uint64_t elapsedNs(std::chrono::steady_clock::time_point start) {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+    }
+
+    bool restoreOwnResolving(std::uintptr_t page) {
+        const auto self = GetCurrentThreadId();
+        std::vector<std::pair<std::uintptr_t, std::uintptr_t>> own;
+        for (const auto& entry : resolving) {
+            if (entry.owner == self && pageStart(entry.begin) <= page && page < pageEnd(entry.end)) own.emplace_back(pageStart(entry.begin), pageEnd(entry.end));
+        }
+        for (const auto& [from, to] : own) restore(from, to);
+        return !own.empty();
     }
 
     static bool readable(DWORD protection) {
@@ -256,6 +335,7 @@ private:
         carve(first, last, [&](std::uintptr_t from, std::uintptr_t to, DWORD protection) {
             DWORD previous = 0;
             VirtualProtect(reinterpret_cast<void*>(from), to - from, protection, &previous);
+            count(Protects);
             noteUntrapped(from, to);
         });
     }
@@ -323,7 +403,10 @@ private:
         }
         if (taken.empty()) return;
         const auto resolve = resolver.load(std::memory_order_acquire);
+        const auto start = std::chrono::steady_clock::now();
         for (const auto& [from, to] : taken) resolve(from, to);
+        count(Resolves, taken.size());
+        count(ResolveNs, elapsedNs(start));
         std::lock_guard lock(mutex);
         for (const auto& [from, to] : taken) {
             const auto found = std::find_if(resolving.begin(), resolving.end(), [&](const Resolving& entry) { return entry.begin == from && entry.end == to && entry.owner == self; });
@@ -384,6 +467,7 @@ private:
     std::condition_variable wake;
     std::condition_variable finished;
     std::deque<Request*> queue;
+    std::array<std::atomic<std::uint64_t>, CounterCount> counters{};
 };
 
 }
