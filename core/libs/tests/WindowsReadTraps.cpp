@@ -229,6 +229,41 @@ void CheckWideStore() {
     Require(GuestWriteWatchSetReadTrapResolver_nid_postfix(&Resolve));
 }
 
+void CheckDirectMemory() {
+    constexpr std::size_t block = 0x10000;
+    constexpr std::size_t bytes = 4 * block;
+    auto* memory = static_cast<std::uint8_t*>(GuestArenaAllocate_nid_postfix(2 * bytes, block));
+    Require(memory != nullptr);
+    const auto section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, bytes, nullptr);
+    Require(section != nullptr);
+    GuestArenaMapDirect_nid_postfix(memory, bytes, section, 0, PAGE_READWRITE);
+    const auto base = reinterpret_cast<std::uintptr_t>(memory);
+    const auto label = base + 0x100;
+    std::uint64_t counters[18]{};
+    Require(GuestWriteWatchTrapReads_nid_postfix(label, 3 * block));
+    GuestWriteWatchTakeReadTrapCounters_nid_postfix(counters, 18);
+    Require(GuestWriteWatchTrapReads_nid_postfix(label, 3 * block));
+    Require(GuestWriteWatchTakeReadTrapCounters_nid_postfix(counters, 18) == 18 && counters[1] == 1 && counters[0] == 0 && counters[17] == 0);
+    stamp = 0x9191;
+    Require(Read(label + 2 * block) == 0 && Read(label) == 0x9191);
+    Require(TakeResolved() == Ranges{{label, label + 3 * block}});
+    GuestArenaPinWritable_nid_postfix(memory + block, 64);
+    Require(!GuestWriteWatchTrapReads_nid_postfix(base + block, 16));
+    GuestArenaUnpinWritable_nid_postfix(memory + block, 64);
+    Require(GuestWriteWatchTrapReads_nid_postfix(base + block, 16));
+    GuestArenaPinWritable_nid_postfix(memory + block, 64);
+    Require(TakeResolved() == Ranges{{base + block, base + block + 16}} && ProtectionAt(base + block) == PAGE_READWRITE);
+    GuestArenaUnpinWritable_nid_postfix(memory + block, 64);
+    Require(GuestWriteWatchTrapReads_nid_postfix(base + 2 * block, 16));
+    GuestArenaMapDirect_nid_postfix(memory + bytes, bytes, section, 0, PAGE_READWRITE);
+    Require(Read(base + 2 * block) == 0 && TakeResolved().empty());
+    Require(!GuestWriteWatchTrapReads_nid_postfix(base + 2 * block, 16));
+    GuestArenaReset_nid_postfix(memory, 2 * bytes);
+    GuestArenaRelease_nid_postfix(memory, 2 * bytes);
+    GuestArenaForgetSection_nid_postfix(section);
+    CloseHandle(section);
+}
+
 void CheckBypass() {
     Memory memory;
     const auto label = memory.At(7 * Page);
@@ -263,6 +298,7 @@ int main() {
         CheckRefusals();
         CheckConcurrentReaders();
         CheckWideStore();
+        CheckDirectMemory();
         CheckBypass();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
