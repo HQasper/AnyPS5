@@ -253,9 +253,11 @@ public:
     }
 
     void Pin(std::uintptr_t address, std::size_t bytes) {
+        WindowsReadTraps::Get().WithoutTraps(address, address + bytes);
         std::lock_guard lock(mutex);
         disown(address, address + bytes);
         ownedPins.emplace(address, address + bytes);
+        WindowsReadTraps::Get().Drop(address, address + bytes, true);
         for (auto it = views.lower_bound(address & ~(pageBytes - 1)); it != views.end() && it->first < address + bytes; ++it) {
             if (it->second.resident) {
                 if (it->second.armed != 0) resumeResidentWrites(it->first);
@@ -518,6 +520,7 @@ public:
     bool TrapReads(std::uintptr_t address, std::size_t bytes) {
         auto& traps = WindowsReadTraps::Get();
         if (!traps.Enabled() || bytes == 0 || address + bytes < address) return false;
+        if (traps.Holds(address, address + bytes)) return true;
         const auto first = address & ~std::uintptr_t{subpageBytes - 1};
         const auto last = (address + bytes + subpageBytes - 1) & ~std::uintptr_t{subpageBytes - 1};
         std::lock_guard lock(mutex);
@@ -527,12 +530,11 @@ public:
         };
         if (overlapsOwnedRange(ownedHostAccess, first, last) || overlapsOwnedRange(ownedPins, first, last) || overlapsOwnedRange(protecting, first, last)) return refuse();
         for (auto cursor = first; cursor < last;) {
-            const auto base = cursor & ~(pageBytes - 1);
-            if (const auto found = views.find(base); found != views.end()) {
-                if (!found->second.resident || found->second.pins != 0) return refuse();
-                cursor = std::min(last, base + pageBytes);
+            if (const auto next = residentRuns.upper_bound(cursor); next != residentRuns.begin() && std::prev(next)->second.end > cursor) {
+                cursor = std::min(last, std::prev(next)->second.end);
                 continue;
             }
+            if (views.contains(cursor & ~(pageBytes - 1))) return refuse();
             const auto allocationEnd = privateAllocationEnd(cursor);
             if (allocationEnd == 0) return refuse();
             cursor = std::min(last, allocationEnd);

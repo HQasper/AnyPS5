@@ -115,6 +115,15 @@ public:
         return true;
     }
 
+    bool Holds(std::uintptr_t begin, std::uintptr_t end) {
+        if (!trapping.load(std::memory_order_acquire)) return false;
+        std::lock_guard lock(mutex);
+        const auto [same, other] = traps.equal_range(begin);
+        if (std::none_of(same, other, [&](const auto& trap) { return trap.second == end; })) return false;
+        count(TrapsAgain);
+        return true;
+    }
+
     void Release(std::uintptr_t begin, std::uintptr_t end) {
         if (end <= begin) return;
         std::lock_guard lock(mutex);
