@@ -7409,7 +7409,8 @@ bool untrackedRevalidateTests(const Device& device, Recorder& recorder) {
             ShaderResources::ProofReport report;
             Require(resources->Revalidate(std::span(&imageCompute, 1), &report), "a " + label + " template over untracked memory did not revalidate");
             Require(report.path == ShaderResources::ProofPath::Fast, "a " + label + " template over untracked memory took the full walk in the same collect epoch");
-            Require(resources->Revalidate(std::span(&imageCompute, 1), &report) && report.path == ShaderResources::ProofPath::Fast, "a second " + label + " proof in the same collect epoch was not fast");
+            // With the draw finisher on, the epoch proof answers the second Revalidate before any fast proof runs.
+            Require(resources->Revalidate(std::span(&imageCompute, 1), &report) && (ShaderResources::EpochProofs() || report.path == ShaderResources::ProofPath::Fast), "a second " + label + " proof in the same collect epoch was not fast");
             std::memset(block, 0x41, 4096);
             AgcDriver::GuestMemory::BumpCollectEpoch();
             static_cast<void>(resources->Revalidate(std::span(&imageCompute, 1), &report));
@@ -7740,10 +7741,13 @@ bool untrackedIndexTests(const Device& device, Recorder& recorder) {
     outcomes = WriteIndexOutcomesCounted();
     reproofs = ShaderResources::UntrackedReproofCounts();
     indexedReads = 0;
-    Require(resources->Revalidate(std::span(&imageCompute, 1), &report) && report.path == ShaderResources::ProofPath::Fast, "a second proof in the collect epoch was not fast under the write index");
-    indexed = WriteIndexOutcomesCounted();
-    Require(indexed.accepted - outcomes.accepted == 1u, "the write index did not accept the second proof in the collect epoch");
-    Require(indexedReads.load() == 0 && ShaderResources::UntrackedReproofCounts().stamped - reproofs.stamped == 1u, "the write index did not take the untracked snapshot by its collect epoch's stamp on the second proof");
+    // With the draw finisher on, the epoch proof answers the second Revalidate before the write index runs.
+    Require(resources->Revalidate(std::span(&imageCompute, 1), &report) && (ShaderResources::EpochProofs() || report.path == ShaderResources::ProofPath::Fast), "a second proof in the collect epoch was not fast under the write index");
+    if (!ShaderResources::EpochProofs()) {
+        indexed = WriteIndexOutcomesCounted();
+        Require(indexed.accepted - outcomes.accepted == 1u, "the write index did not accept the second proof in the collect epoch");
+        Require(indexedReads.load() == 0 && ShaderResources::UntrackedReproofCounts().stamped - reproofs.stamped == 1u, "the write index did not take the untracked snapshot by its collect epoch's stamp on the second proof");
+    }
     const auto stale = resources->SampledTextures();
     std::memset(block, 0x41, 4096);
     AgcDriver::GuestMemory::BumpCollectEpoch();

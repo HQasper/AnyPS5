@@ -471,6 +471,9 @@ VKAPI_ATTR VkResult VKAPI_CALL stubGetFenceStatus(VkDevice, VkFence) {
     return VK_SUCCESS;
 }
 
+// FillDeviceFunctions also resolves these device functions; the tests only resolve them, never call them.
+VKAPI_ATTR void VKAPI_CALL stubUnusedDeviceFunction() {}
+
 const std::map<std::string_view, PFN_vkVoidFunction>& stubTable() {
     static const std::map<std::string_view, PFN_vkVoidFunction> table{
 #define TEST_SCALAR_ENTRY(name) {name##Name, reinterpret_cast<PFN_vkVoidFunction>(&Scalar<name##Name, 0, PFN_vkCmd##name>::Call)},
@@ -482,6 +485,14 @@ const std::map<std::string_view, PFN_vkVoidFunction>& stubTable() {
         {"vkUpdateDescriptorSets", reinterpret_cast<PFN_vkVoidFunction>(&stubUpdateDescriptorSets)},
         {"vkAllocateDescriptorSets", reinterpret_cast<PFN_vkVoidFunction>(&stubAllocateDescriptorSets)},
         {"vkGetFenceStatus", reinterpret_cast<PFN_vkVoidFunction>(&stubGetFenceStatus)},
+        {"vkCreateBuffer", &stubUnusedDeviceFunction},
+        {"vkDestroyBuffer", &stubUnusedDeviceFunction},
+        {"vkGetBufferMemoryRequirements", &stubUnusedDeviceFunction},
+        {"vkBindBufferMemory", &stubUnusedDeviceFunction},
+        {"vkAllocateMemory", &stubUnusedDeviceFunction},
+        {"vkFreeMemory", &stubUnusedDeviceFunction},
+        {"vkMapMemory", &stubUnusedDeviceFunction},
+        {"vkUnmapMemory", &stubUnusedDeviceFunction},
     };
     return table;
 }
@@ -521,9 +532,18 @@ struct Functions {
 #undef TEST_MEMBER
 };
 
+// Context::Function refuses the commands CommandState tracks at compile time (FunctionName), so
+// the test asks the context's resolver directly, which is what Context::lookup does.
+template<typename TFunction>
+TFunction resolveOne(const Context& context, const char* name) {
+    const auto function = reinterpret_cast<TFunction>(context.deviceProc(context.device, name));
+    if (function == nullptr) throw std::runtime_error(std::string("missing Vulkan function: ") + name);
+    return function;
+}
+
 Functions resolve(const Context& context) {
     Functions functions;
-#define TEST_RESOLVE(name) functions.cmd##name = context.Function<PFN_vkCmd##name>(name##Name);
+#define TEST_RESOLVE(name) functions.cmd##name = resolveOne<PFN_vkCmd##name>(context, name##Name);
     TEST_ALL_OPS(TEST_RESOLVE)
 #undef TEST_RESOLVE
     return functions;
