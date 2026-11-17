@@ -2834,11 +2834,13 @@ std::optional<DepthExpandPass> DecodeDepthExpandPass(const QueueState& queue) {
     if (((zInfo >> 4u) & 0x1fu) != 24u) reject("of a depth surface in a swizzle mode other than SW_64KB_Z_X");
     if ((zInfo & 0x000f1000u) != 0) reject("of a partially resident or mipmapped depth surface");
     if ((view & 0x3c000000u) != 0) reject("of a depth view with a mip level");
-    if ((value(0x207) & LayerExports) != 0) {
+    // The expand runs its own pass, not the draw's shaders: a layer the vertex shader exports can
+    // only select the view's slice when the view holds one (Red Dead Redemption's expand).
+    if ((value(0x207) & LayerExports) != 0 && ((view >> 13u) & 0x7ffu) != (view & 0x1fffu)) {
         static const bool skip = std::getenv("APS5_SKIP_LAYERED_DB_EXPAND") != nullptr;
-        if (!skip) reject("with layer exports");
+        if (!skip) reject("with layer exports over several slices");
         static std::atomic<bool> reported{false};
-        if (!reported.exchange(true, std::memory_order_relaxed)) std::fprintf(stderr, "[db-expand] APS5_SKIP_LAYERED_DB_EXPAND: leaving out-of-place DB expands with layer exports undone (DB_RENDER_CONTROL 0x%08x, DB_Z_INFO 0x%08x, PA_CL_VS_OUT_CNTL 0x%08x, DB_DEPTH_VIEW 0x%08x)\n", control, zInfo, value(0x207), view);
+        if (!reported.exchange(true, std::memory_order_relaxed)) std::fprintf(stderr, "[db-expand] APS5_SKIP_LAYERED_DB_EXPAND: leaving out-of-place DB expands with layer exports over several slices undone (DB_RENDER_CONTROL 0x%08x, DB_Z_INFO 0x%08x, PA_CL_VS_OUT_CNTL 0x%08x, DB_DEPTH_VIEW 0x%08x)\n", control, zInfo, value(0x207), view);
         DepthExpandPass skipped{};
         skipped.skipped = true;
         return skipped;

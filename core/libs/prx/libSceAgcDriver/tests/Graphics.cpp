@@ -3273,7 +3273,6 @@ void depthExpandPassTests() {
         {0x010u, 0x20010183u, "of a partially resident or mipmapped depth surface"},
         {0x002u, 1u << 26u, "of a depth view with a mip level"},
         {0x002u, 0x02000000u | (1u << 26u), "of a depth view with a mip level"},
-        {0x207u, 1u << 18u, "with layer exports"},
         {0x014u, 0x20298b01u, "between bases that are not 64 KiB aligned"},
         {0x10fu, std::bit_cast<std::uint32_t>(480.0f), "over part of the depth surface"},
         {0x91u, (1080u << 16u) | 1920u, "over part of the depth surface"},
@@ -3290,6 +3289,14 @@ void depthExpandPassTests() {
         Require(slice.has_value() && slice->source.firstSlice == 2u, "the DB expand of a depth view's third slice was not taken");
         const auto offset = slice->source.address - 0x202a8a0000ull;
         Require(offset != 0 && offset % 0x10000u == 0 && slice->destination - 0x20298b0000ull == offset && slice->source.stencilAddress > 0x2029430000ull, "the DB expand of a depth view's third slice did not move the read and write bases by the same two slices");
+    }
+    for (const auto exports : {1u << 18u, 0x01240000u}) {
+        auto layered = expand();
+        layered.context[0x207] = exports;
+        const auto taken = AgcDriver::Graphics::DecodeDepthExpandPass(layered);
+        Require(taken.has_value() && taken->destination == 0x20298b0000ull, "the DB expand of a one-slice depth view whose vertex shader exports a layer (Red Dead Redemption's PA_CL_VS_OUT_CNTL 0x01240000) was refused");
+        layered.context[0x002] = 2u | (5u << 13u);
+        expectFailure([&] { AgcDriver::Graphics::DecodeDepthExpandPass(layered); }, "with layer exports over several slices");
     }
     auto colored = expand();
     colored.context[0x202] = 0x00cc0010u;
