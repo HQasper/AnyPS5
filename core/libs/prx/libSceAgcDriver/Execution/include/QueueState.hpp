@@ -217,10 +217,14 @@ private:
     mutable std::uint64_t fingerprint = 0;
 };
 
+// PA_CL_VTE_CNTL (0x206) starts, and comes back after CLEAR_STATE, at 0x43f (homogeneous positions
+// with every viewport transform): Red Dead Redemption (PPSA30528) never programs it after CLEAR_STATE,
+// and with 0 its reversed-depth viewport lost its z scale and offset, so far surfaces drew over near
+// ones. A draw whose title writes 0 still gets the viewport covering its render target.
 inline Registers BuildInitialContextRegisters() {
     Registers result{
         {0x200, 0}, {0x201, 0}, {0x202, 0xcc0010}, {0x203, 0},
-        {0x204, 0}, {0x205, 0}, {0x206, 0}, {0x207, 0},
+        {0x204, 0}, {0x205, 0}, {0x206, 0x43f}, {0x207, 0},
         {0x0, 0}, {0x2, 0}, {0x3, 0}, {0x4, 0}, {0x8, 0}, {0x9, 0x3f800000}, {0xa, 0}, {0xb, 0}, {0x10, 0}, {0x11, 0},
         {0x80, 0}, {0x83, 0xffff}, {0x8c, 0xaa99aaaa}, {0x8d, 0}, {0x8e, 0xffffffffu}, {0x8f, 0xffffffffu},
         {0xc, 0}, {0xd, 0x40004000}, {0x81, 0x80000000}, {0x82, 0x40004000},
