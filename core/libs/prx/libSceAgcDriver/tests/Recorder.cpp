@@ -4,6 +4,7 @@
 #include "prx/libSceAgcDriver/Execution/include/PipelineLinkOptimization.hpp"
 #include "Triangle_frag_spv.h"
 #include "Triangle_vert_spv.h"
+#include "prx/libSceAgcDriver/Graphics/include/CommandStream.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/VertexInput.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Pipeline.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineCache.hpp"
@@ -627,7 +628,7 @@ public:
                 function<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2"), extensionsEnabled, device);
             device.pEnabledFeatures = &enabled;
             Check(function<PFN_vkCreateDevice>("vkCreateDevice")(context.physical, &device, nullptr, &context.device), "vkCreateDevice");
-            context.deviceProc = function<PFN_vkGetDeviceProcAddr>("vkGetDeviceProcAddr");
+            context.deviceProc = AgcDriver::Graphics::RecordCommandStreams(context.device, function<PFN_vkGetDeviceProcAddr>("vkGetDeviceProcAddr"));
             function<PFN_vkGetPhysicalDeviceMemoryProperties>("vkGetPhysicalDeviceMemoryProperties")(context.physical, &context.memory);
             VkPhysicalDeviceProperties properties{};
             function<PFN_vkGetPhysicalDeviceProperties>("vkGetPhysicalDeviceProperties")(context.physical, &properties);
