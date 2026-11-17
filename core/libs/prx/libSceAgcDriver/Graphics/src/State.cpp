@@ -12,6 +12,7 @@
 #include "prx/libc/include/General.hpp"
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <bitset>
 #include <cmath>
@@ -2833,7 +2834,15 @@ std::optional<DepthExpandPass> DecodeDepthExpandPass(const QueueState& queue) {
     if (((zInfo >> 4u) & 0x1fu) != 24u) reject("of a depth surface in a swizzle mode other than SW_64KB_Z_X");
     if ((zInfo & 0x000f1000u) != 0) reject("of a partially resident or mipmapped depth surface");
     if ((view & 0x3c000000u) != 0) reject("of a depth view with a mip level");
-    if ((value(0x207) & LayerExports) != 0) reject("with layer exports");
+    if ((value(0x207) & LayerExports) != 0) {
+        static const bool skip = std::getenv("APS5_SKIP_LAYERED_DB_EXPAND") != nullptr;
+        if (!skip) reject("with layer exports");
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true, std::memory_order_relaxed)) std::fprintf(stderr, "[db-expand] APS5_SKIP_LAYERED_DB_EXPAND: leaving out-of-place DB expands with layer exports undone (DB_RENDER_CONTROL 0x%08x, DB_Z_INFO 0x%08x, PA_CL_VS_OUT_CNTL 0x%08x, DB_DEPTH_VIEW 0x%08x)\n", control, zInfo, value(0x207), view);
+        DepthExpandPass skipped{};
+        skipped.skipped = true;
+        return skipped;
+    }
     if (((source | destination | (planes.stencil ? base(0x013, 0x01b) | base(0x015, 0x01d) : 0u)) & 0xffffu) != 0) reject("between bases that are not 64 KiB aligned");
     zero(cx, 0x80, ~0u, "window offset");
     if (const auto viewportControl = read(cx, 0x206); viewportControl != 0x43fu) throw std::runtime_error(vteMessage(viewportControl));

@@ -305,6 +305,8 @@ struct DepthExpandPass {
     DepthTarget source;
     std::uint64_t destination;
     std::uint64_t stencilDestination = 0;
+    // A layered expand APS5_SKIP_LAYERED_DB_EXPAND leaves undone: the draw precheck draws nothing.
+    bool skipped = false;
 };
 std::optional<DepthExpandPass> DecodeDepthExpandPass(const QueueState& queue);
 struct DepthCopyPass {

@@ -58,6 +58,7 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
     const auto metadata = Graphics::DecodeColorMetadataPass(queue);
     std::optional<Graphics::DepthExpandPass> expand;
     if (!metadata) expand = Graphics::DecodeDepthExpandPass(queue);
+    if (expand && expand->skipped) return DrawVerdict::Nothing;
     if (metadata || expand) {
         require(!metadata || !drawParameters.indirect, "indirect CB metadata passes are unsupported");
         if (expand && !drawParameters.indirect && (drawParameters.indexCount == 0 || drawParameters.instanceCount == 0)) return DrawVerdict::Nothing;
