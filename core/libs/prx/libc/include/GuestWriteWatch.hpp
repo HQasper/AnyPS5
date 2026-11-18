@@ -28,6 +28,8 @@ void GuestWriteWatchSetReadTrapBypass_nid_postfix(bool (*bypass)());
 bool GuestWriteWatchTrapReads_nid_postfix(std::uintptr_t address, std::size_t bytes);
 void GuestWriteWatchReadTraps_nid_postfix(std::uintptr_t address, std::size_t bytes, void (*trapped)(void* context, std::uintptr_t begin, std::uintptr_t end), void* context);
 void GuestWriteWatchReleaseReads_nid_postfix(std::uintptr_t address, std::size_t bytes);
+// A value that moves whenever a read trap is taken away; 0 where it is not tracked.
+std::uint64_t GuestWriteWatchReadTrapGeneration_nid_postfix();
 std::size_t GuestWriteWatchTakeReadTrapCounters_nid_postfix(std::uint64_t* values, std::size_t capacity);
 
 }

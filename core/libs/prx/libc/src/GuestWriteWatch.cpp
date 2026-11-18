@@ -1407,6 +1407,14 @@ void GuestWriteWatchReleaseReads_nid_postfix(std::uintptr_t address, std::size_t
 #endif
 }
 
+std::uint64_t GuestWriteWatchReadTrapGeneration_nid_postfix() {
+#if defined(_WIN32)
+    return GuestArena::WindowsReadTraps::Get().RemovalGeneration();
+#else
+    return 0;
+#endif
+}
+
 std::size_t GuestWriteWatchTakeReadTrapCounters_nid_postfix(std::uint64_t* values, std::size_t capacity) {
 #if defined(_WIN32)
     return GuestArena::WindowsReadTraps::Get().TakeCounters(values, capacity);

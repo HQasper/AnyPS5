@@ -264,6 +264,30 @@ void CheckDirectMemory() {
     CloseHandle(section);
 }
 
+// A label keeps an image's trap without a lookup while the removal generation stays: it must stay
+// while traps are only added or found again, and move when one is released, resolved or dropped.
+void CheckRemovalGeneration() {
+    Memory memory;
+    const auto label = memory.At(3 * Page);
+    const auto other = memory.At(6 * Page);
+    const auto start = GuestWriteWatchReadTrapGeneration_nid_postfix();
+    Require(start != 0);
+    Require(GuestWriteWatchTrapReads_nid_postfix(label, 32) && GuestWriteWatchTrapReads_nid_postfix(label, 32) && GuestWriteWatchTrapReads_nid_postfix(other, 32));
+    Require(GuestWriteWatchReadTrapGeneration_nid_postfix() == start);
+    GuestWriteWatchReleaseReads_nid_postfix(other, 32);
+    const auto released = GuestWriteWatchReadTrapGeneration_nid_postfix();
+    Require(released != start);
+    stamp = 0x4444;
+    Require(Read(label) == 0x4444 && TakeResolved() == Ranges{{label, label + 32}});
+    const auto resolvedAt = GuestWriteWatchReadTrapGeneration_nid_postfix();
+    Require(resolvedAt != released);
+    Require(GuestWriteWatchTrapReads_nid_postfix(label, 32) && GuestWriteWatchReadTrapGeneration_nid_postfix() == resolvedAt);
+    stamp = 0x6666;
+    Require(GuestArenaBeginHostWrite_nid_postfix(reinterpret_cast<void*>(label), 32));
+    Require(TakeResolved() == Ranges{{label, label + 32}} && GuestWriteWatchReadTrapGeneration_nid_postfix() != resolvedAt);
+    GuestArenaEndHostWrite_nid_postfix(reinterpret_cast<void*>(label), 32);
+}
+
 void CheckBypass() {
     Memory memory;
     const auto label = memory.At(7 * Page);
@@ -300,6 +324,7 @@ int main() {
         CheckWideStore();
         CheckDirectMemory();
         CheckBypass();
+        CheckRemovalGeneration();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

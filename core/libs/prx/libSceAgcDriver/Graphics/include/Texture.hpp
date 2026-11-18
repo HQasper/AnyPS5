@@ -898,6 +898,8 @@ private:
     bool dirty = false;
     bool drawnListed = false;
     mutable std::atomic<bool> readTrapped{false};
+    // The read-trap removal generation at which a label last found readTrapped's trap held (see StoreReadbackBeforeLabel).
+    mutable std::atomic<std::uint64_t> readTrapGeneration{0};
     bool drawnWhole = false;
     bool drawingTarget = false;
     bool pendingFromOthers = false;

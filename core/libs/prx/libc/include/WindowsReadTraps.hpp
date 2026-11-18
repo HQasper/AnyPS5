@@ -131,6 +131,7 @@ public:
         const auto found = std::find_if(first, last, [&](const auto& trap) { return trap.second == end; });
         if (found == last) return;
         traps.erase(found);
+        removals.fetch_add(1, std::memory_order_acq_rel);
         count(Releases);
         untrap(pageStart(begin), pageEnd(end));
     }
@@ -198,6 +199,12 @@ public:
         }
         count(QueuedWaitNs, elapsedNs(start));
         return true;
+    }
+
+    // Moves whenever a trap is taken away (released, dropped or resolved), so a caller that saw an exact
+    // range trapped at one value knows Holds would still answer it while the value stays the same.
+    std::uint64_t RemovalGeneration() const {
+        return removals.load(std::memory_order_acquire);
     }
 
     std::size_t TrappedPages() {
@@ -320,6 +327,7 @@ private:
                 last = std::max(last, pageEnd(it->second));
                 taken.emplace_back(*it);
                 it = traps.erase(it);
+                removals.fetch_add(1, std::memory_order_acq_rel);
                 grew = true;
             }
         }
@@ -466,6 +474,7 @@ private:
     std::array<std::pair<std::uintptr_t, std::uintptr_t>, RecentUntraps> recent{};
     std::size_t recentNext = 0;
     std::uint64_t untrapGeneration = 0;
+    std::atomic<std::uint64_t> removals{1};
     std::atomic<bool> trapping{false};
     std::atomic<Resolver> resolver{nullptr};
     std::atomic<Bypass> bypass{nullptr};

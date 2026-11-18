@@ -35,6 +35,7 @@
 #include "RdnaDecoder/include/RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include "IntermediateRepresentation/include/IntermediateRepresentation/IrMetadata/BufferFormat.hpp"
 #include <algorithm>
+#include <tuple>
 #include <filesystem>
 #include <array>
 #include <bit>
@@ -146,7 +147,7 @@ std::atomic<std::uint64_t> partialUploads{0}, partialUploadBytes{0}, partialWrit
 // (Refresh).
 std::atomic<std::uint64_t> pretestSkipped{0}, unregisteredDropped{0}, keyFlipKept{0};
 std::atomic<std::uint64_t> queuedReadHeld{0};
-std::atomic<std::uint64_t> labelTrapped{0}, labelTrapHeldWaits{0};
+std::atomic<std::uint64_t> labelTrapped{0}, labelTrapsKept{0}, labelTrapHeldWaits{0};
 // Images stored by a FlushPending after a hook skip of theirs (AccessKeptByCpu), of which by the
 // hook for the read site of the last skip; images evictStale dropped (the [hooksync] and [storage] lines).
 std::atomic<std::uint64_t> flushedAfterSkip{0}, flushedAfterSkipSameSite{0}, staleEvicted{0};
@@ -230,7 +231,7 @@ void reportStorageTraffic(StorageTraffic& traffic) {
     std::array<std::uint64_t, 18> taken{};
     if (GuestWriteWatch::GuestWriteWatchTakeReadTrapCounters_nid_postfix(taken.data(), taken.size()) == taken.size()) {
         std::copy(taken.begin(), taken.end(), traps.begin());
-        AgcDriver::ProfilePrint_nid_no_patch("[readtraps] 10 s: label traps %llu, held-read waits %llu; traps new %llu (%.1f MiB) again %llu refused %llu + %llu by the mappings, protects %llu; faults %llu: queued %llu (%.1f ms waiting), own stores %llu, resolver thread %llu, bypassed %llu, untrapped %llu; retried %llu; resolves %llu in %.1f ms; releases %llu, drops %llu\n", take(labelTrapped), take(labelTrapHeldWaits), traps[0], traps[3] / 1048576.0, traps[1], traps[2], traps[17], traps[4], traps[5], traps[6], traps[7] / 1e6, traps[8], traps[9], traps[10], traps[11], traps[12], traps[13], traps[14] / 1e6, traps[15], traps[16]);
+        AgcDriver::ProfilePrint_nid_no_patch("[readtraps] 10 s: label traps %llu (%llu kept without a lookup), held-read waits %llu; traps new %llu (%.1f MiB) again %llu refused %llu + %llu by the mappings, protects %llu; faults %llu: queued %llu (%.1f ms waiting), own stores %llu, resolver thread %llu, bypassed %llu, untrapped %llu; retried %llu; resolves %llu in %.1f ms; releases %llu, drops %llu\n", take(labelTrapped), take(labelTrapsKept), take(labelTrapHeldWaits), traps[0], traps[3] / 1048576.0, traps[1], traps[2], traps[17], traps[4], traps[5], traps[6], traps[7] / 1e6, traps[8], traps[9], traps[10], traps[11], traps[12], traps[13], traps[14] / 1e6, traps[15], traps[16]);
     }
 #endif
 }
@@ -5869,21 +5870,62 @@ void StorageTexture::StoreReadbackBeforeLabel(const char* reason, VkDevice devic
         const bool trap = LabelTrapsEnabled();
         if (trap) labelTrapsSet.store(true, std::memory_order_relaxed);
         const auto page = TrapPage();
-        const auto sharesPage = [&](const StorageTexture* texture) {
+        const auto stored = [](const StorageTexture* texture) { return texture->descriptor.tileMode == TextureTileMode::kLinear || texture->guestBytes <= SmallStoreBytes; };
+        const auto sharesPageScan = [&](const StorageTexture* texture) {
             const auto first = texture->descriptor.baseAddress & ~(page - 1);
             const auto bytes = static_cast<std::size_t>(((texture->descriptor.baseAddress + texture->guestBytes + page - 1) & ~(page - 1)) - first);
             const auto shares = [&](const StorageTexture* other) { return other != texture && other->overlaps(first, bytes); };
-            const auto sharesStored = [&](const StorageTexture* other) { return shares(other) && (other->descriptor.tileMode == TextureTileMode::kLinear || other->guestBytes <= SmallStoreBytes); };
+            const auto sharesStored = [&](const StorageTexture* other) { return shares(other) && stored(other); };
             return std::any_of(pending.textures.begin(), pending.textures.end(), sharesStored) || std::any_of(pending.flushing.begin(), pending.flushing.end(), shares);
         };
+        // A label runs this for every pending stored image, and a scan of the pending images per image made
+        // it quadratic in them: the images whose trap pages another stored or flushing image touches are
+        // found once per label from the sorted page spans instead (two images of some bytes share a page
+        // exactly when their page spans overlap; an image of no bytes holds no page, and keeps the scan).
+        thread_local std::vector<std::tuple<std::uint64_t, std::uint64_t, const StorageTexture*>> spans;
+        thread_local std::vector<const StorageTexture*> sharing;
+        spans.clear();
+        sharing.clear();
+        if (trap) {
+            const auto add = [&](const StorageTexture* texture) {
+                if (texture->guestBytes == 0) return;
+                const auto first = texture->descriptor.baseAddress & ~(page - 1);
+                spans.emplace_back(first, (texture->descriptor.baseAddress + texture->guestBytes + page - 1) & ~(page - 1), texture);
+            };
+            for (const auto* texture : pending.textures) {
+                if (stored(texture)) add(texture);
+            }
+            for (const auto* texture : pending.flushing) add(texture);
+            std::sort(spans.begin(), spans.end());
+            for (std::size_t index = 0; index < spans.size(); ++index) {
+                const auto& [first, end, texture] = spans[index];
+                for (auto next = index + 1; next < spans.size() && std::get<0>(spans[next]) < end; ++next) {
+                    if (std::get<2>(spans[next]) == texture) continue;
+                    sharing.push_back(texture);
+                    sharing.push_back(std::get<2>(spans[next]));
+                }
+            }
+            std::sort(sharing.begin(), sharing.end());
+        }
+        const auto sharesPage = [&](const StorageTexture* texture) { return texture->guestBytes == 0 ? sharesPageScan(texture) : std::binary_search(sharing.begin(), sharing.end(), texture); };
+        // An image that the last label found trapped needs no read-trap lookup while no trap was taken away
+        // since (the removal generation is unchanged): the lookup would answer the same exact range held.
+        const auto trapGeneration = trap ? GuestWriteWatch::GuestWriteWatchReadTrapGeneration_nid_postfix() : 0;
+        static const bool lookupAlways = std::getenv("APS5_LABEL_TRAP_LOOKUP") != nullptr;
 #endif
         for (const auto* texture : pending.textures) {
             if (texture->descriptor.tileMode != TextureTileMode::kLinear && texture->guestBytes > SmallStoreBytes) continue;
 #if defined(__APPLE__) || defined(_WIN32)
-            if (trap && !sharesPage(texture) && (texture->readTrapped.load(std::memory_order_acquire) || !DirectMemoryAliased_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes))) && GuestWriteWatch::GuestWriteWatchTrapReads_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes))) {
-                texture->readTrapped.store(true, std::memory_order_release);
-                labelTrapped.fetch_add(1, std::memory_order_relaxed);
-                continue;
+            if (trap && !sharesPage(texture)) {
+                const bool trapped = texture->readTrapped.load(std::memory_order_acquire);
+                const bool kept = !lookupAlways && trapped && trapGeneration != 0 && texture->readTrapGeneration.load(std::memory_order_relaxed) == trapGeneration;
+                if (kept || ((trapped || !DirectMemoryAliased_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes))) && GuestWriteWatch::GuestWriteWatchTrapReads_nid_postfix(static_cast<std::uintptr_t>(texture->descriptor.baseAddress), static_cast<std::size_t>(texture->guestBytes)))) {
+                    texture->readTrapGeneration.store(trapGeneration, std::memory_order_relaxed);
+                    texture->readTrapped.store(true, std::memory_order_release);
+                    labelTrapped.fetch_add(1, std::memory_order_relaxed);
+                    if (kept) labelTrapsKept.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
             }
 #endif
             ranges.emplace_back(texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes));
